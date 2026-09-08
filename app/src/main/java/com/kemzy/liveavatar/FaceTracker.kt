@@ -35,15 +35,17 @@ class FaceTracker(
                         FaceTrackingResult.none()
                     } else {
                         val bounds = face.boundingBox
+                        val imageWidth = image.width.toFloat().coerceAtLeast(1f)
+                        val imageHeight = image.height.toFloat().coerceAtLeast(1f)
                         FaceTrackingResult(
                             faceCount = faces.size,
                             yawDegrees = face.headEulerAngleY,
                             pitchDegrees = face.headEulerAngleX,
                             rollDegrees = face.headEulerAngleZ,
-                            centerX = bounds.exactCenterX(),
-                            centerY = bounds.exactCenterY(),
-                            width = bounds.width().toFloat(),
-                            height = bounds.height().toFloat()
+                            centerX = bounds.exactCenterX() / imageWidth,
+                            centerY = bounds.exactCenterY() / imageHeight,
+                            width = bounds.width() / imageWidth,
+                            height = bounds.height() / imageHeight
                         )
                     }
                 )
