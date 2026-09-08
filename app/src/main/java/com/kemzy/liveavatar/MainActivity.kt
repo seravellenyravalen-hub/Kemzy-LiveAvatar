@@ -23,8 +23,9 @@ import java.util.concurrent.Executors
 class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
     private val avatarSelection = AvatarSelection()
-    private val faceSwapEngine: FaceSwapEngine = PreviewFaceSwapEngine()
+    private lateinit var faceSwapEngine: FaceSwapEngine
     private val analysisExecutor = Executors.newSingleThreadExecutor()
+    private val modelExecutor = Executors.newSingleThreadExecutor()
     private lateinit var faceTracker: FaceTracker
     private lateinit var previewView: PreviewView
     private lateinit var previewContainer: FrameLayout
@@ -43,13 +44,15 @@ class MainActivity : ComponentActivity() {
             avatarPreview.setImageURI(uri)
             trackingAvatarView.setImageURI(uri)
             avatarPreview.visibility = View.VISIBLE
-            statusView.text = "Avatar selected — press Start"
+            statusView.text = "Preparing local AI face engine…"
             updateControls()
+            prepareAvatarEngine()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         faceTracker = FaceTracker(
             onResult = { result ->
                 runOnUiThread {
@@ -67,6 +70,21 @@ class MainActivity : ComponentActivity() {
             updateControls()
         } else {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+        }
+    }
+
+    private fun prepareAvatarEngine() {
+        modelExecutor.execute {
+            val state = faceSwapEngine.prepareAvatar()
+            runOnUiThread {
+                statusView.text = when (state) {
+                    LiveFaceEngineState.Ready -> "AI face engine ready — press Start"
+                    LiveFaceEngineState.Preparing -> "Preparing local AI face engine…"
+                    LiveFaceEngineState.Idle -> "Choose an avatar to begin"
+                    is LiveFaceEngineState.Fallback -> state.reason
+                }
+                updateControls()
+            }
         }
     }
 
@@ -235,12 +253,14 @@ class MainActivity : ComponentActivity() {
         if (sessionController.state !is SessionState.Running) return
         statusView.text = if (result.faceCount == 0) {
             "Live tracking — no face detected"
-        } else {
-            "Tracking preview • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
+        } else if (faceSwapEngine.isReady) {
+            "AI face tracking • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
                 result.yawDegrees,
                 result.pitchDegrees,
                 result.rollDegrees
             )
+        } else {
+            "Tracking active • AI engine not ready"
         }
     }
 
@@ -277,11 +297,14 @@ class MainActivity : ComponentActivity() {
         selectAvatarButton.isEnabled = !running
         startButton.isEnabled = hasCameraPermission() && hasAvatar && !running
         stopButton.isEnabled = running
-        statusView.text = when {
-            running -> "Live tracking preview running"
-            !hasCameraPermission() -> "Camera permission required"
-            !hasAvatar -> "Choose an avatar to begin"
-            else -> "Avatar ready — press Start"
+        if (!running) {
+            statusView.text = when {
+                !hasCameraPermission() -> "Camera permission required"
+                !hasAvatar -> "Choose an avatar to begin"
+                faceSwapEngine.state is LiveFaceEngineState.Ready -> "AI face engine ready — press Start"
+                faceSwapEngine.state is LiveFaceEngineState.Fallback -> (faceSwapEngine.state as LiveFaceEngineState.Fallback).reason
+                else -> "Preparing local AI face engine…"
+            }
         }
     }
 
@@ -305,6 +328,7 @@ class MainActivity : ComponentActivity() {
         faceTracker.close()
         faceSwapEngine.close()
         analysisExecutor.shutdown()
+        modelExecutor.shutdown()
         sessionController.stop()
         super.onDestroy()
     }
