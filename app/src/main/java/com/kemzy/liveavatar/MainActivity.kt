@@ -12,14 +12,18 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
     private val avatarSelection = AvatarSelection()
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+    private lateinit var faceTracker: FaceTracker
     private lateinit var previewView: PreviewView
     private lateinit var avatarPreview: ImageView
     private lateinit var statusView: TextView
@@ -40,6 +44,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        faceTracker = FaceTracker(
+            onResult = { result ->
+                runOnUiThread { updateTrackingStatus(result) }
+            },
+            onError = { error ->
+                runOnUiThread { statusView.text = "Face tracking error: ${error.message ?: "unknown"}" }
+            }
+        )
         buildUi()
 
         if (hasCameraPermission()) {
@@ -174,14 +186,34 @@ class MainActivity : ComponentActivity() {
             val preview = Preview.Builder().build().also {
                 it.surfaceProvider = previewView.surfaceProvider
             }
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also { analyzer ->
+                    analyzer.setAnalyzer(analysisExecutor) { image -> faceTracker.process(image) }
+                }
 
             provider.unbindAll()
             provider.bindToLifecycle(
                 this,
                 CameraSelector.DEFAULT_FRONT_CAMERA,
-                preview
+                preview,
+                analysis
             )
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun updateTrackingStatus(result: FaceTrackingResult) {
+        if (sessionController.state !is SessionState.Running) return
+        statusView.text = if (result.faceCount == 0) {
+            "Live session — no face detected"
+        } else {
+            "Face tracked • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
+                result.yawDegrees,
+                result.pitchDegrees,
+                result.rollDegrees
+            )
+        }
     }
 
     private fun updateControls() {
@@ -215,6 +247,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         cameraProvider?.unbindAll()
+        faceTracker.close()
+        analysisExecutor.shutdown()
         sessionController.stop()
         super.onDestroy()
     }
