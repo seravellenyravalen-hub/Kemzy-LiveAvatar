@@ -1,1 +1,2 @@
-# Kemzy LiveAvatar release rules will be added when shrinking is enabled.
+# ONNX Runtime uses runtime-loaded classes and providers.
+-keep class ai.onnxruntime.** { *; }
