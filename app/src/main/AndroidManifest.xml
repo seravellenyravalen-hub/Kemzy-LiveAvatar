@@ -4,7 +4,9 @@
 
     <application
         android:allowBackup="true"
-        android:label="Kemzy LiveAvatar"
+        android:icon="@drawable/ic_kemzy_liveavatar"
+        android:label="Kemzy-LiveAvatar"
+        android:roundIcon="@drawable/ic_kemzy_liveavatar"
         android:supportsRtl="true"
         android:theme="@style/Theme.KemzyLiveAvatar">
         <activity
