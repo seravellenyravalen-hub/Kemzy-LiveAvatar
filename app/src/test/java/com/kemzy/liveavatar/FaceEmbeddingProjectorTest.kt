@@ -10,7 +10,7 @@ class FaceEmbeddingProjectorTest {
         val embedding = floatArrayOf(3f, 4f, 0f)
         val emap = floatArrayOf(
             1f, 0f,
-            0f, 2f,
+            0f, 1f,
             0f, 0f
         )
 
