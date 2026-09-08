@@ -13,8 +13,8 @@ class FaceTracker(
     private val detector: FaceDetector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
-            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
             .enableTracking()
             .build()
     )
@@ -45,7 +45,10 @@ class FaceTracker(
                             centerX = bounds.exactCenterX() / imageWidth,
                             centerY = bounds.exactCenterY() / imageHeight,
                             width = bounds.width() / imageWidth,
-                            height = bounds.height() / imageHeight
+                            height = bounds.height() / imageHeight,
+                            leftEyeOpenProbability = face.leftEyeOpenProbability,
+                            rightEyeOpenProbability = face.rightEyeOpenProbability,
+                            smilingProbability = face.smilingProbability
                         )
                     }
                 )
