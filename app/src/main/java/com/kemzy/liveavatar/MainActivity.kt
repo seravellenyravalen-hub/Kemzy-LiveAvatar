@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -22,9 +23,12 @@ import java.util.concurrent.Executors
 class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
     private val avatarSelection = AvatarSelection()
+    private val faceSwapEngine: FaceSwapEngine = PreviewFaceSwapEngine()
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private lateinit var faceTracker: FaceTracker
     private lateinit var previewView: PreviewView
+    private lateinit var previewContainer: FrameLayout
+    private lateinit var trackingAvatarView: ImageView
     private lateinit var avatarPreview: ImageView
     private lateinit var statusView: TextView
     private lateinit var startButton: Button
@@ -35,7 +39,9 @@ class MainActivity : ComponentActivity() {
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             avatarSelection.select(uri.toString())
+            faceSwapEngine.setAvatar(uri.toString())
             avatarPreview.setImageURI(uri)
+            trackingAvatarView.setImageURI(uri)
             avatarPreview.visibility = View.VISIBLE
             statusView.text = "Avatar selected — press Start"
             updateControls()
@@ -46,7 +52,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         faceTracker = FaceTracker(
             onResult = { result ->
-                runOnUiThread { updateTrackingStatus(result) }
+                runOnUiThread {
+                    updateTrackingStatus(result)
+                    updateTrackingAvatar(result)
+                }
             },
             onError = { error ->
                 runOnUiThread { statusView.text = "Face tracking error: ${error.message ?: "unknown"}" }
@@ -76,12 +85,29 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(header)
 
+        previewContainer = FrameLayout(this)
         previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
-        root.addView(
+        previewContainer.addView(
             previewView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        trackingAvatarView = ImageView(this).apply {
+            visibility = View.GONE
+            alpha = 0.86f
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            contentDescription = "Tracking avatar preview"
+            setBackgroundColor(0x33181818)
+        }
+        previewContainer.addView(trackingAvatarView)
+        root.addView(
+            previewContainer,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -167,6 +193,7 @@ class MainActivity : ComponentActivity() {
         }
 
         sessionController.start()
+        trackingAvatarView.visibility = View.GONE
         bindFrontCamera()
         updateControls()
     }
@@ -174,6 +201,7 @@ class MainActivity : ComponentActivity() {
     private fun stopSession() {
         sessionController.stop()
         cameraProvider?.unbindAll()
+        trackingAvatarView.visibility = View.GONE
         updateControls()
     }
 
@@ -206,14 +234,41 @@ class MainActivity : ComponentActivity() {
     private fun updateTrackingStatus(result: FaceTrackingResult) {
         if (sessionController.state !is SessionState.Running) return
         statusView.text = if (result.faceCount == 0) {
-            "Live session — no face detected"
+            "Live tracking — no face detected"
         } else {
-            "Face tracked • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
+            "Tracking preview • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
                 result.yawDegrees,
                 result.pitchDegrees,
                 result.rollDegrees
             )
         }
+    }
+
+    private fun updateTrackingAvatar(result: FaceTrackingResult) {
+        if (sessionController.state !is SessionState.Running || !faceSwapEngine.isReady) {
+            trackingAvatarView.visibility = View.GONE
+            return
+        }
+
+        val model = AvatarOverlayModel.from(
+            result,
+            previewContainer.width,
+            previewContainer.height
+        )
+        if (!model.visible) {
+            trackingAvatarView.visibility = View.GONE
+            return
+        }
+
+        val width = model.width.coerceIn(96f, previewContainer.width.toFloat().coerceAtLeast(96f)).toInt()
+        val height = model.height.coerceIn(96f, previewContainer.height.toFloat().coerceAtLeast(96f)).toInt()
+        val params = FrameLayout.LayoutParams(width, height).apply {
+            leftMargin = (model.centerX - width / 2f).toInt().coerceIn(0, (previewContainer.width - width).coerceAtLeast(0))
+            topMargin = (model.centerY - height / 2f).toInt().coerceIn(0, (previewContainer.height - height).coerceAtLeast(0))
+        }
+        trackingAvatarView.layoutParams = params
+        trackingAvatarView.rotation = model.rotationDegrees
+        trackingAvatarView.visibility = View.VISIBLE
     }
 
     private fun updateControls() {
@@ -223,7 +278,7 @@ class MainActivity : ComponentActivity() {
         startButton.isEnabled = hasCameraPermission() && hasAvatar && !running
         stopButton.isEnabled = running
         statusView.text = when {
-            running -> "Live session running"
+            running -> "Live tracking preview running"
             !hasCameraPermission() -> "Camera permission required"
             !hasAvatar -> "Choose an avatar to begin"
             else -> "Avatar ready — press Start"
@@ -248,6 +303,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         cameraProvider?.unbindAll()
         faceTracker.close()
+        faceSwapEngine.close()
         analysisExecutor.shutdown()
         sessionController.stop()
         super.onDestroy()
