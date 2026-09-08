@@ -19,6 +19,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
@@ -26,6 +27,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var faceSwapEngine: FaceSwapEngine
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val modelExecutor = Executors.newSingleThreadExecutor()
+    private val modelFrameBusy = AtomicBoolean(false)
     private lateinit var faceTracker: FaceTracker
     private lateinit var previewView: PreviewView
     private lateinit var previewContainer: FrameLayout
@@ -42,8 +44,8 @@ class MainActivity : ComponentActivity() {
             avatarSelection.select(uri.toString())
             faceSwapEngine.setAvatar(uri.toString())
             avatarPreview.setImageURI(uri)
-            trackingAvatarView.setImageURI(uri)
             avatarPreview.visibility = View.VISIBLE
+            trackingAvatarView.visibility = View.GONE
             statusView.text = "Preparing local AI face engine…"
             updateControls()
             prepareAvatarEngine()
@@ -54,10 +56,27 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         faceTracker = FaceTracker(
-            onResult = { result ->
-                runOnUiThread {
-                    updateTrackingStatus(result)
-                    updateTrackingAvatar(result)
+            onResult = { result, bitmap ->
+                runOnUiThread { updateTrackingStatus(result) }
+
+                if (bitmap == null || sessionController.state !is SessionState.Running || !faceSwapEngine.isReady) {
+                    bitmap?.recycle()
+                    return@FaceTracker
+                }
+
+                if (!modelFrameBusy.compareAndSet(false, true)) {
+                    bitmap.recycle()
+                    return@FaceTracker
+                }
+
+                modelExecutor.execute {
+                    try {
+                        val output = faceSwapEngine.processFrame(bitmap, result)
+                        runOnUiThread { showNeuralFrame(output) }
+                    } finally {
+                        bitmap.recycle()
+                        modelFrameBusy.set(false)
+                    }
                 }
             },
             onError = { error ->
@@ -118,12 +137,18 @@ class MainActivity : ComponentActivity() {
 
         trackingAvatarView = ImageView(this).apply {
             visibility = View.GONE
-            alpha = 0.86f
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            contentDescription = "Tracking avatar preview"
-            setBackgroundColor(0x33181818)
+            alpha = 1f
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "Live neural avatar"
+            setBackgroundColor(0x00000000)
         }
-        previewContainer.addView(trackingAvatarView)
+        previewContainer.addView(
+            trackingAvatarView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
         root.addView(
             previewContainer,
             LinearLayout.LayoutParams(
@@ -254,7 +279,7 @@ class MainActivity : ComponentActivity() {
         statusView.text = if (result.faceCount == 0) {
             "Live tracking — no face detected"
         } else if (faceSwapEngine.isReady) {
-            "AI face tracking • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
+            "Live AI • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
                 result.yawDegrees,
                 result.pitchDegrees,
                 result.rollDegrees
@@ -264,31 +289,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun updateTrackingAvatar(result: FaceTrackingResult) {
-        if (sessionController.state !is SessionState.Running || !faceSwapEngine.isReady) {
-            trackingAvatarView.visibility = View.GONE
-            return
+    private fun showNeuralFrame(frame: FaceSwapFrame) {
+        if (sessionController.state !is SessionState.Running) return
+        if (frame.isNeural && frame.bitmap != null) {
+            trackingAvatarView.setImageBitmap(frame.bitmap)
+            trackingAvatarView.visibility = View.VISIBLE
+            statusView.text = "Live AI avatar active"
+        } else if (frame.message != null) {
+            statusView.text = frame.message
         }
-
-        val model = AvatarOverlayModel.from(
-            result,
-            previewContainer.width,
-            previewContainer.height
-        )
-        if (!model.visible) {
-            trackingAvatarView.visibility = View.GONE
-            return
-        }
-
-        val width = model.width.coerceIn(96f, previewContainer.width.toFloat().coerceAtLeast(96f)).toInt()
-        val height = model.height.coerceIn(96f, previewContainer.height.toFloat().coerceAtLeast(96f)).toInt()
-        val params = FrameLayout.LayoutParams(width, height).apply {
-            leftMargin = (model.centerX - width / 2f).toInt().coerceIn(0, (previewContainer.width - width).coerceAtLeast(0))
-            topMargin = (model.centerY - height / 2f).toInt().coerceIn(0, (previewContainer.height - height).coerceAtLeast(0))
-        }
-        trackingAvatarView.layoutParams = params
-        trackingAvatarView.rotation = model.rotationDegrees
-        trackingAvatarView.visibility = View.VISIBLE
     }
 
     private fun updateControls() {
