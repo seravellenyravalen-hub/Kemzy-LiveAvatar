@@ -61,21 +61,17 @@ class MainActivity : ComponentActivity() {
 
                 if (bitmap == null || sessionController.state !is SessionState.Running || !faceSwapEngine.isReady) {
                     bitmap?.recycle()
-                    return@FaceTracker
-                }
-
-                if (!modelFrameBusy.compareAndSet(false, true)) {
+                } else if (!modelFrameBusy.compareAndSet(false, true)) {
                     bitmap.recycle()
-                    return@FaceTracker
-                }
-
-                modelExecutor.execute {
-                    try {
-                        val output = faceSwapEngine.processFrame(bitmap, result)
-                        runOnUiThread { showNeuralFrame(output) }
-                    } finally {
-                        bitmap.recycle()
-                        modelFrameBusy.set(false)
+                } else {
+                    modelExecutor.execute {
+                        try {
+                            val output = faceSwapEngine.processFrame(bitmap, result)
+                            runOnUiThread { showNeuralFrame(output) }
+                        } finally {
+                            bitmap.recycle()
+                            modelFrameBusy.set(false)
+                        }
                     }
                 }
             },
