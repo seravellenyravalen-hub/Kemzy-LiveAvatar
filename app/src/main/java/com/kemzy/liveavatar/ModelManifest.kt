@@ -3,18 +3,37 @@ package com.kemzy.liveavatar
 data class FaceModelDescriptor(
     val id: String,
     val fileName: String,
-    val required: Boolean
+    val required: Boolean,
+    val remoteUrl: String? = null
 )
 
 object FaceModelManifest {
     val required = listOf(
-        FaceModelDescriptor("face-detector", "detector.onnx", true),
-        FaceModelDescriptor("arcface-embedder", "arcface.onnx", true),
-        FaceModelDescriptor("face-swapper", "inswapper.onnx", true)
+        FaceModelDescriptor(
+            id = "arcface-embedder",
+            fileName = "w600k_r50.onnx",
+            required = true,
+            remoteUrl = "https://huggingface.co/leonelhs/insightface/resolve/main/w600k_r50.onnx"
+        ),
+        FaceModelDescriptor(
+            id = "face-swapper",
+            fileName = "inswapper_128.onnx",
+            required = true,
+            remoteUrl = "https://huggingface.co/leonelhs/insightface/resolve/main/inswapper_128.onnx"
+        )
     )
 
     val optional = listOf(
-        FaceModelDescriptor("expression-restorer", "expression-restorer.onnx", false)
+        FaceModelDescriptor(
+            id = "inswapper-emap",
+            fileName = "emap.bin",
+            required = false
+        ),
+        FaceModelDescriptor(
+            id = "expression-restorer",
+            fileName = "expression-restorer.onnx",
+            required = false
+        )
     )
 
     val all: List<FaceModelDescriptor>
