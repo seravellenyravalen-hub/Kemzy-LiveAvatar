@@ -10,7 +10,7 @@ class FaceTrackingResultTest {
     }
 
     @Test
-    fun oneFaceCarriesHeadPoseAndNormalizedBounds() {
+    fun oneFaceCarriesHeadPoseBoundsAndExpressionSignals() {
         val result = FaceTrackingResult(
             faceCount = 1,
             yawDegrees = 12f,
@@ -19,7 +19,10 @@ class FaceTrackingResultTest {
             centerX = 0.25f,
             centerY = 0.4f,
             width = 0.3f,
-            height = 0.36f
+            height = 0.36f,
+            leftEyeOpenProbability = 0.91f,
+            rightEyeOpenProbability = 0.88f,
+            smilingProbability = 0.17f
         )
         assertEquals(1, result.faceCount)
         assertEquals(12f, result.yawDegrees)
@@ -29,5 +32,8 @@ class FaceTrackingResultTest {
         assertEquals(0.4f, result.centerY)
         assertEquals(0.3f, result.width)
         assertEquals(0.36f, result.height)
+        assertEquals(0.91f, result.leftEyeOpenProbability)
+        assertEquals(0.88f, result.rightEyeOpenProbability)
+        assertEquals(0.17f, result.smilingProbability)
     }
 }
