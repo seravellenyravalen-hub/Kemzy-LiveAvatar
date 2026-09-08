@@ -10,24 +10,24 @@ class FaceTrackingResultTest {
     }
 
     @Test
-    fun oneFaceCarriesHeadPoseAndBounds() {
+    fun oneFaceCarriesHeadPoseAndNormalizedBounds() {
         val result = FaceTrackingResult(
             faceCount = 1,
             yawDegrees = 12f,
             pitchDegrees = -4f,
             rollDegrees = 3f,
-            centerX = 250f,
-            centerY = 400f,
-            width = 300f,
-            height = 360f
+            centerX = 0.25f,
+            centerY = 0.4f,
+            width = 0.3f,
+            height = 0.36f
         )
         assertEquals(1, result.faceCount)
         assertEquals(12f, result.yawDegrees)
         assertEquals(-4f, result.pitchDegrees)
         assertEquals(3f, result.rollDegrees)
-        assertEquals(250f, result.centerX)
-        assertEquals(400f, result.centerY)
-        assertEquals(300f, result.width)
-        assertEquals(360f, result.height)
+        assertEquals(0.25f, result.centerX)
+        assertEquals(0.4f, result.centerY)
+        assertEquals(0.3f, result.width)
+        assertEquals(0.36f, result.height)
     }
 }
