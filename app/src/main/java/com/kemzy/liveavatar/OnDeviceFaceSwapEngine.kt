@@ -1,6 +1,7 @@
 package com.kemzy.liveavatar
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Build
 import ai.onnxruntime.OrtSession
 
@@ -21,9 +22,11 @@ class OnDeviceFaceSwapEngine(
 
     private var embedderSession: OrtSession? = null
     private var swapperSession: OrtSession? = null
+    private var processor: NeuralFaceSwapProcessor? = null
 
     override fun setAvatar(uri: String) {
         avatarUri = uri
+        processor?.clear()
         state = LiveFaceEngineState.Preparing
     }
 
@@ -71,7 +74,23 @@ class OnDeviceFaceSwapEngine(
                 store.fileFor(FaceModelManifest.required.first { it.id == "face-swapper" }).absolutePath,
                 backend
             )
-            state = LiveFaceEngineState.Ready
+
+            val activeProcessor = NeuralFaceSwapProcessor(appContext)
+            activeProcessor.attachSessions(embedderSession!!, swapperSession!!)
+            val error = activeProcessor.prepareAvatar(
+                avatarUri!!,
+                store.fileFor(FaceModelManifest.optional.first { it.id == "inswapper-emap" })
+            )
+            if (error != null) {
+                embedderSession?.close()
+                swapperSession?.close()
+                embedderSession = null
+                swapperSession = null
+                state = LiveFaceEngineState.Fallback(error)
+            } else {
+                processor = activeProcessor
+                state = LiveFaceEngineState.Ready
+            }
             state
         } catch (error: Exception) {
             embedderSession?.close()
@@ -88,19 +107,33 @@ class OnDeviceFaceSwapEngine(
     override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame =
         FaceSwapFrame.fallback(
             when (state) {
-                LiveFaceEngineState.Ready -> "AI runtime loaded; frame swap stage is not connected yet"
+                LiveFaceEngineState.Ready -> "AI runtime loaded; camera frame required for neural output"
                 is LiveFaceEngineState.Fallback -> state.reason
                 LiveFaceEngineState.Preparing -> "AI models are preparing"
                 LiveFaceEngineState.Idle -> "AI engine is idle"
             }
         )
 
+    override fun processFrame(frame: Bitmap, tracking: FaceTrackingResult): FaceSwapFrame {
+        if (state !is LiveFaceEngineState.Ready) return processFrame(tracking)
+        return try {
+            val output = processor?.process(frame, tracking)
+            if (output != null) FaceSwapFrame.neural(output)
+            else FaceSwapFrame.fallback("Neural frame inference produced no output")
+        } catch (error: Exception) {
+            FaceSwapFrame.fallback("Neural frame inference failed: ${error.message ?: "unknown error"}")
+        }
+    }
+
     override fun clearAvatar() {
         avatarUri = null
+        processor?.clear()
         state = LiveFaceEngineState.Idle
     }
 
     override fun close() {
+        processor?.clear()
+        processor = null
         embedderSession?.close()
         swapperSession?.close()
         embedderSession = null
