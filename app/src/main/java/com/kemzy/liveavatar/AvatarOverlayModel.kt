@@ -15,10 +15,10 @@ data class AvatarOverlayModel(
             }
             return AvatarOverlayModel(
                 visible = true,
-                centerX = result.centerX,
-                centerY = result.centerY,
-                width = result.width,
-                height = result.height,
+                centerX = result.centerX * viewWidth,
+                centerY = result.centerY * viewHeight,
+                width = result.width * viewWidth,
+                height = result.height * viewHeight,
                 rotationDegrees = result.rollDegrees
             )
         }
