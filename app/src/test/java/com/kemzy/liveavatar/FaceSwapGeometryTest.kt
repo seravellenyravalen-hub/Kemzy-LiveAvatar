@@ -19,10 +19,10 @@ class FaceSwapGeometryTest {
             margin = 0.35f
         )
 
-        assertEquals(380, crop.left)
-        assertEquals(280, crop.top)
-        assertEquals(240, crop.width)
-        assertEquals(240, crop.height)
+        assertEquals(296, crop.left)
+        assertEquals(196, crop.top)
+        assertEquals(408, crop.width)
+        assertEquals(408, crop.height)
     }
 
     @Test
