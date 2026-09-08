@@ -34,11 +34,16 @@ class FaceTracker(
                     if (face == null) {
                         FaceTrackingResult.none()
                     } else {
+                        val bounds = face.boundingBox
                         FaceTrackingResult(
                             faceCount = faces.size,
                             yawDegrees = face.headEulerAngleY,
                             pitchDegrees = face.headEulerAngleX,
-                            rollDegrees = face.headEulerAngleZ
+                            rollDegrees = face.headEulerAngleZ,
+                            centerX = bounds.exactCenterX(),
+                            centerY = bounds.exactCenterY(),
+                            width = bounds.width().toFloat(),
+                            height = bounds.height().toFloat()
                         )
                     }
                 )
