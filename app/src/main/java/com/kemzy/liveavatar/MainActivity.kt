@@ -6,9 +6,11 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -17,11 +19,24 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
+    private val avatarSelection = AvatarSelection()
     private lateinit var previewView: PreviewView
+    private lateinit var avatarPreview: ImageView
     private lateinit var statusView: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
+    private lateinit var selectAvatarButton: Button
     private var cameraProvider: ProcessCameraProvider? = null
+
+    private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            avatarSelection.select(uri.toString())
+            avatarPreview.setImageURI(uri)
+            avatarPreview.visibility = View.VISIBLE
+            statusView.text = "Avatar selected — press Start"
+            updateControls()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +55,15 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(0xFF000000.toInt())
         }
 
+        val header = TextView(this).apply {
+            text = "Kemzy-LiveAvatar"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setPadding(16, 18, 16, 10)
+        }
+        root.addView(header)
+
         previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
             scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -53,12 +77,42 @@ class MainActivity : ComponentActivity() {
             )
         )
 
+        avatarPreview = ImageView(this).apply {
+            visibility = View.GONE
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            contentDescription = "Selected avatar"
+            setBackgroundColor(0xFF181818.toInt())
+        }
+        root.addView(
+            avatarPreview,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                180
+            ).apply {
+                setMargins(16, 10, 16, 4)
+            }
+        )
+
+        selectAvatarButton = Button(this).apply {
+            text = "Choose Avatar"
+            setOnClickListener { pickAvatar.launch("image/*") }
+        }
+        root.addView(
+            selectAvatarButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(16, 4, 16, 4)
+            }
+        )
+
         statusView = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 15f
             gravity = Gravity.CENTER
             text = "Camera ready"
-            setPadding(16, 16, 16, 16)
+            setPadding(16, 12, 16, 12)
         }
         root.addView(
             statusView,
@@ -71,7 +125,7 @@ class MainActivity : ComponentActivity() {
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(16, 8, 16, 24)
+            setPadding(16, 4, 16, 24)
         }
 
         startButton = Button(this).apply {
@@ -93,6 +147,10 @@ class MainActivity : ComponentActivity() {
     private fun startSession() {
         if (!hasCameraPermission()) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+            return
+        }
+        if (avatarSelection.uri == null) {
+            statusView.text = "Choose an avatar first"
             return
         }
 
@@ -128,14 +186,15 @@ class MainActivity : ComponentActivity() {
 
     private fun updateControls() {
         val running = sessionController.state is SessionState.Running
-        startButton.isEnabled = hasCameraPermission() && !running
+        val hasAvatar = avatarSelection.uri != null
+        selectAvatarButton.isEnabled = !running
+        startButton.isEnabled = hasCameraPermission() && hasAvatar && !running
         stopButton.isEnabled = running
-        statusView.text = if (running) {
-            "Live session running"
-        } else if (hasCameraPermission()) {
-            "Camera ready — press Start"
-        } else {
-            "Camera permission required"
+        statusView.text = when {
+            running -> "Live session running"
+            !hasCameraPermission() -> "Camera permission required"
+            !hasAvatar -> "Choose an avatar to begin"
+            else -> "Avatar ready — press Start"
         }
     }
 
