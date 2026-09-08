@@ -1,5 +1,7 @@
 package com.kemzy.liveavatar
 
+import android.graphics.Bitmap
+
 interface FaceSwapEngine {
     val avatarUri: String?
     val state: LiveFaceEngineState
@@ -9,6 +11,11 @@ interface FaceSwapEngine {
     fun setAvatar(uri: String)
     fun prepareAvatar(): LiveFaceEngineState
     fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame
+
+    /** Real camera-frame path. Implementations may override this when neural inference is ready. */
+    fun processFrame(frame: Bitmap, tracking: FaceTrackingResult): FaceSwapFrame =
+        processFrame(tracking)
+
     fun clearAvatar()
     fun close()
 }
