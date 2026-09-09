@@ -6,16 +6,22 @@ import org.junit.Test
 class InferenceBackendPolicyTest {
     @Test
     fun old_android_uses_cpu() {
-        assertEquals(InferenceBackend.CPU, InferenceBackendSelector.select(26, true))
+        assertEquals(listOf(InferenceBackend.CPU), InferenceBackendSelector.candidates(26, true))
     }
 
     @Test
-    fun modern_android_prefers_nnapi_when_available() {
-        assertEquals(InferenceBackend.NNAPI, InferenceBackendSelector.select(31, true))
+    fun modern_android_with_nnapi_prefers_xnnpack_then_cpu_then_nnapi() {
+        assertEquals(
+            listOf(InferenceBackend.XNNPACK, InferenceBackend.CPU, InferenceBackend.NNAPI),
+            InferenceBackendSelector.candidates(31, true)
+        )
     }
 
     @Test
-    fun modern_android_falls_back_to_xnnpack_without_nnapi() {
-        assertEquals(InferenceBackend.XNNPACK, InferenceBackendSelector.select(31, false))
+    fun modern_android_without_nnapi_prefers_xnnpack_then_cpu() {
+        assertEquals(
+            listOf(InferenceBackend.XNNPACK, InferenceBackend.CPU),
+            InferenceBackendSelector.candidates(31, false)
+        )
     }
 }
