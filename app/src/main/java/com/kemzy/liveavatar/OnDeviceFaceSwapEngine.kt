@@ -28,7 +28,8 @@ class OnDeviceFaceSwapEngine(
     }
 
     override fun prepareAvatar(): LiveFaceEngineState {
-        if (avatarUri.isNullOrBlank()) {
+        val reference = avatarUri
+        if (reference.isNullOrBlank()) {
             state = LiveFaceEngineState.Fallback("No avatar selected")
             return state
         }
@@ -60,7 +61,7 @@ class OnDeviceFaceSwapEngine(
 
             val activeProcessor = NeuralFaceSwapProcessor(appContext)
             activeProcessor.attachSessions(embedderSession!!, swapperSession!!)
-            val error = activeProcessor.prepareAvatar(avatarUri!!, store.fileFor(emap))
+            val error = activeProcessor.prepareAvatar(reference, store.fileFor(emap))
             if (error != null) {
                 closeSessions()
                 state = LiveFaceEngineState.Fallback(error)
@@ -101,7 +102,8 @@ class OnDeviceFaceSwapEngine(
         swapperSession = null
     }
 
-    override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame = FaceSwapFrame.fallback("Live neural frame required")
+    override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame =
+        FaceSwapFrame.fallback("Live neural frame required")
 
     override fun processFrame(frame: Bitmap, tracking: FaceTrackingResult): FaceSwapFrame {
         if (state !is LiveFaceEngineState.Ready) return processFrame(tracking)
