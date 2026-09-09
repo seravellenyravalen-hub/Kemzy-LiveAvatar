@@ -34,6 +34,7 @@ class LiveCameraController(
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private val modelExecutor = Executors.newSingleThreadExecutor()
     private val modelBusy = AtomicBoolean(false)
+    private var liveEnabled = false
     private val faceTracker = FaceTracker(
         onResult = { tracking, bitmap -> processTrackedFrame(tracking, bitmap) },
         onError = { onError(it.message ?: "Face tracking failed") }
@@ -51,6 +52,10 @@ class LiveCameraController(
             faceSwapEngine.clearAvatar()
             faceSwapEngine.setAvatar(uri)
         }
+    }
+
+    fun setLiveEnabled(enabled: Boolean) {
+        liveEnabled = enabled
     }
 
     fun prepareAvatarAsync(onComplete: (LiveFaceEngineState) -> Unit) {
@@ -145,6 +150,7 @@ class LiveCameraController(
     }
 
     fun release() {
+        liveEnabled = false
         recording?.close()
         recording = null
         cameraProvider?.unbindAll()
@@ -158,13 +164,17 @@ class LiveCameraController(
 
     private fun processTrackedFrame(tracking: FaceTrackingResult, bitmap: android.graphics.Bitmap?) {
         if (bitmap == null) return
+        if (!liveEnabled) {
+            bitmap.recycle()
+            return
+        }
         if (!modelBusy.compareAndSet(false, true)) {
             bitmap.recycle()
             return
         }
         modelExecutor.execute {
             try {
-                if (faceSwapEngine.isReady) {
+                if (faceSwapEngine.isReady && liveEnabled) {
                     val output = faceSwapEngine.processFrame(bitmap, tracking)
                     if (output.isNeural && output.bitmap != null) onLiveFrame(output.bitmap)
                 }
