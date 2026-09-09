@@ -2,6 +2,7 @@ package com.kemzy.liveavatar
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
     private val avatarSelection = AvatarSelection()
     private val streamingReferenceLock = StreamingReferenceLock()
+    private lateinit var referenceImageStore: ReferenceImageStore
     private lateinit var faceSwapEngine: FaceSwapEngine
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val modelExecutor = Executors.newSingleThreadExecutor()
@@ -41,12 +43,20 @@ class MainActivity : ComponentActivity() {
     private var cameraProvider: ProcessCameraProvider? = null
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null && !streamingReferenceLock.isStreaming) {
-            val selected = uri.toString()
-            if (!streamingReferenceLock.select(selected)) return@registerForActivityResult
-            avatarSelection.select(selected)
-            faceSwapEngine.setAvatar(selected)
-            avatarPreview.setImageURI(uri)
+        if (uri == null || streamingReferenceLock.isStreaming) return@registerForActivityResult
+
+        runCatching {
+            val previous = avatarSelection.uri
+            val localUri = referenceImageStore.persist(uri)
+            if (!streamingReferenceLock.select(localUri)) {
+                referenceImageStore.delete(localUri)
+                return@runCatching
+            }
+
+            previous?.let(referenceImageStore::delete)
+            avatarSelection.select(localUri)
+            faceSwapEngine.setAvatar(localUri)
+            avatarPreview.setImageURI(Uri.parse(localUri))
             avatarPreview.visibility = View.VISIBLE
             updateControls()
             prepareAvatarEngine()
@@ -62,6 +72,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        referenceImageStore = ReferenceImageStore(applicationContext)
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         faceTracker = FaceTracker(
             onResult = { result, bitmap ->
@@ -84,7 +95,6 @@ class MainActivity : ComponentActivity() {
                 }
             },
             onError = {
-                // Diagnostics stay internal. The user-facing surface remains usable.
                 runOnUiThread {
                     if (sessionController.state is SessionState.Running) {
                         statusView.text = "Live tracking"
@@ -141,7 +151,7 @@ class MainActivity : ComponentActivity() {
             alpha = 1f
             scaleType = ImageView.ScaleType.FIT_CENTER
             contentDescription = "Live neural avatar"
-            setBackgroundColor(0x00000000)
+            setBackgroundColor(0xFF000000.toInt())
         }
         previewContainer.addView(
             trackingAvatarView,
@@ -233,17 +243,16 @@ class MainActivity : ComponentActivity() {
         }
 
         val reference = avatarSelection.uri ?: return
+        if (!faceSwapEngine.isReady) return
         if (!streamingReferenceLock.select(reference)) return
         if (!streamingReferenceLock.beginStreaming()) return
 
         sessionController.start()
-        trackingAvatarView.visibility = View.GONE
+        previewView.visibility = View.INVISIBLE
+        trackingAvatarView.visibility = View.VISIBLE
+        trackingAvatarView.setImageDrawable(null)
         statusView.text = "Live tracking"
         bindFrontCamera()
-
-        // Retry preparation silently. The selected reference remains locked even if
-        // the network changes or the local model needs another initialization attempt.
-        if (!faceSwapEngine.isReady) prepareAvatarEngine()
         updateControls()
     }
 
@@ -252,6 +261,7 @@ class MainActivity : ComponentActivity() {
         cameraProvider?.unbindAll()
         streamingReferenceLock.stopStreaming()
         trackingAvatarView.visibility = View.GONE
+        previewView.visibility = View.VISIBLE
         updateControls()
     }
 
@@ -283,11 +293,7 @@ class MainActivity : ComponentActivity() {
 
     private fun updateTrackingStatus(result: FaceTrackingResult) {
         if (sessionController.state !is SessionState.Running) return
-        statusView.text = if (result.faceCount == 0) {
-            "Live tracking"
-        } else {
-            "Live tracking"
-        }
+        statusView.text = "Live tracking"
     }
 
     private fun showNeuralFrame(frame: FaceSwapFrame) {
@@ -297,14 +303,13 @@ class MainActivity : ComponentActivity() {
             trackingAvatarView.visibility = View.VISIBLE
             statusView.text = "Live tracking"
         }
-        // Fallback/error messages are intentionally not surfaced to the user.
     }
 
     private fun updateControls() {
         val running = sessionController.state is SessionState.Running
         val hasAvatar = avatarSelection.uri != null
         selectAvatarButton.isEnabled = !running
-        startButton.isEnabled = hasCameraPermission() && hasAvatar && !running
+        startButton.isEnabled = hasCameraPermission() && hasAvatar && faceSwapEngine.isReady && !running
         stopButton.isEnabled = running
         if (!running) {
             statusView.text = when {
@@ -326,6 +331,7 @@ class MainActivity : ComponentActivity() {
         analysisExecutor.shutdown()
         modelExecutor.shutdown()
         streamingReferenceLock.stopStreaming()
+        avatarSelection.uri?.let(referenceImageStore::delete)
         sessionController.stop()
         super.onDestroy()
     }
