@@ -16,7 +16,7 @@ class RgbTensorCodecTest {
 
         assertEquals(6, output.size)
         assertArrayEquals(
-            floatArrayOf(1f, 0f, -1f, 1f, -1f, -1f),
+            floatArrayOf(1f, -1f, -1f, 1f, -1f, -1f),
             output,
             0.0001f
         )
@@ -32,10 +32,17 @@ class RgbTensorCodecTest {
         val output = RgbTensorCodec.swapper(rgb, width = 2, height = 1)
 
         assertEquals(6, output.size)
-        assertEquals(1f, output[0], 0.0001f)
-        assertEquals(0f, output[1], 0.0001f)
-        assertEquals(128f / 255f, output[2], 0.0001f)
-        assertEquals(64f / 255f, output[4], 0.0001f)
-        assertEquals(1f, output[5], 0.0001f)
+        assertArrayEquals(
+            floatArrayOf(
+                1f,
+                0f,
+                128f / 255f,
+                64f / 255f,
+                0f,
+                1f
+            ),
+            output,
+            0.0001f
+        )
     }
 }
