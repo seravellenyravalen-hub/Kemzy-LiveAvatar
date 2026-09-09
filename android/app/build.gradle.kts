@@ -15,12 +15,13 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Configure locally with -PKEMZY_PRIVACY_PASSCODE=... or the
-        // KEMZY_PRIVACY_PASSCODE environment variable. Never commit the secret.
-        val configuredPasscode = providers.gradleProperty("KEMZY_PRIVACY_PASSCODE").orNull
-            ?: System.getenv("KEMZY_PRIVACY_PASSCODE")
-            ?: "CONFIGURE_PASSCODE"
-        buildConfigField("String", "PRIVACY_PASSCODE", "\"$configuredPasscode\"")
+        // The PIN itself is never committed; this is its SHA-256 digest.
+        // A build may override it with -P KEMZY_PRIVACY_PIN_SHA256 or the
+        // KEMZY_PRIVACY_PIN_SHA256 environment variable.
+        val configuredPinHash = providers.gradleProperty("KEMZY_PRIVACY_PIN_SHA256").orNull
+            ?: System.getenv("KEMZY_PRIVACY_PIN_SHA256")
+            ?: "facfb3c210d09f7443c677eda3a5a2dad35c422f8c3430c0c4cf7f2bca9df931"
+        buildConfigField("String", "PRIVACY_PIN_SHA256", "\"$configuredPinHash\"")
     }
 
     compileOptions {
