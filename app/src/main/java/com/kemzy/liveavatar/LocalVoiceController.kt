@@ -8,13 +8,15 @@ import java.io.File
 class LocalVoiceController(private val context: Context) {
     private var recorder: MediaRecorder? = null
     private var player: MediaPlayer? = null
+    private var lastOutputPath: String? = null
 
     val isRecording: Boolean
         get() = recorder != null
 
     fun startRecording(output: File) {
         stopRecording()
-        recorder = MediaRecorder(context).apply {
+        lastOutputPath = output.absolutePath
+        recorder = MediaRecorder().apply {
             setAudioSource(MediaRecorder.AudioSource.MIC)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -32,19 +34,14 @@ class LocalVoiceController(private val context: Context) {
         return try {
             active.stop()
             active.release()
-            File(lastOutputPath ?: return null)
+            lastOutputPath?.let(::File)
         } catch (_: Exception) {
             active.release()
             null
         }
     }
 
-    private var lastOutputPath: String? = null
-
-    fun startRecordingAndRemember(output: File) {
-        lastOutputPath = output.absolutePath
-        startRecording(output)
-    }
+    fun startRecordingAndRemember(output: File) = startRecording(output)
 
     fun play(file: File, onComplete: () -> Unit = {}) {
         stopPlayback()
