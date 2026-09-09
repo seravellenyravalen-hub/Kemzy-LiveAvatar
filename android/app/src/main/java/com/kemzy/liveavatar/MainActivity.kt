@@ -3,7 +3,6 @@ package com.kemzy.liveavatar
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.widget.Button
@@ -41,21 +40,19 @@ class MainActivity : ComponentActivity() {
     private var liveSwapEnabled = false
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
 
-    private val lockLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
+    private val lockLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != RESULT_OK) finish()
     }
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else status.text = "Camera permission is required for Live mode."
     }
 
-    private val sourcePicker = registerForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
+    private val audioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startBackgroundLiveNow() else status.text = "Microphone permission is required for voice processing."
+    }
+
+    private val sourcePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
         runCatching {
             contentResolver.openInputStream(uri).use { stream ->
@@ -105,7 +102,6 @@ class MainActivity : ComponentActivity() {
             lockLauncher.launch(Intent(this, LockActivity::class.java))
             return
         }
-
         refreshOutputStatus()
         if (LiveCameraService.active) {
             backgroundLiveButton.visibility = Button.GONE
@@ -113,7 +109,6 @@ class MainActivity : ComponentActivity() {
             status.text = "Background Live is active"
             return
         }
-
         backgroundLiveButton.visibility = Button.VISIBLE
         stopBackgroundLiveButton.visibility = Button.GONE
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -183,21 +178,24 @@ class MainActivity : ComponentActivity() {
             status.text = modelBundleRepository.status()
             return
         }
-
-        stopCamera()
-        val intent = Intent(this, LiveCameraService::class.java).apply {
-            action = LiveCameraService.ACTION_START
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
         }
+        startBackgroundLiveNow()
+    }
+
+    private fun startBackgroundLiveNow() {
+        stopCamera()
+        val intent = Intent(this, LiveCameraService::class.java).apply { action = LiveCameraService.ACTION_START }
         ContextCompat.startForegroundService(this, intent)
         backgroundLiveButton.visibility = Button.GONE
         stopBackgroundLiveButton.visibility = Button.VISIBLE
-        status.text = "Starting Background Live Swap…"
+        status.text = "Starting Background Live Swap + Voice Effects…"
     }
 
     private fun stopBackgroundLive() {
-        startService(Intent(this, LiveCameraService::class.java).apply {
-            action = LiveCameraService.ACTION_STOP
-        })
+        startService(Intent(this, LiveCameraService::class.java).apply { action = LiveCameraService.ACTION_STOP })
         backgroundLiveButton.visibility = Button.VISIBLE
         stopBackgroundLiveButton.visibility = Button.GONE
         status.text = "Background Live stopped"
@@ -222,58 +220,35 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             if (isFinishing || isDestroyed || appLock.isLocked() || LiveCameraService.active) return@addListener
             val provider = future.get()
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
+            val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also { useCase ->
-                    useCase.setAnalyzer(
-                        cameraExecutor,
-                        if (liveSwapEnabled) {
-                            val runtime = requireNotNull(swapRuntime)
-                            LiveSwapAnalyzer(
-                                runtime = runtime,
-                                sourceProvider = { sourceRepository.loadSource() },
-                                onProcessed = { bitmap ->
-                                    runOnUiThread {
-                                        if (!isFinishing && !isDestroyed) {
-                                            processedPreview.setImageBitmap(bitmap)
-                                            status.text = "Live Swap active · real ONNX processing"
-                                        }
-                                    }
-                                },
-                                onFrameDropped = { status.text = "Live Swap · reducing backlog" },
-                                onFrameError = { error ->
-                                    runOnUiThread {
-                                        if (!isFinishing && !isDestroyed) {
-                                            status.text = "Live Swap error: ${error.message ?: "model processing failed"}"
-                                        }
-                                    }
+                    useCase.setAnalyzer(cameraExecutor, if (liveSwapEnabled) {
+                        val runtime = requireNotNull(swapRuntime)
+                        LiveSwapAnalyzer(
+                            runtime = runtime,
+                            sourceProvider = { sourceRepository.loadSource() },
+                            onProcessed = { bitmap -> runOnUiThread {
+                                if (!isFinishing && !isDestroyed) {
+                                    processedPreview.setImageBitmap(bitmap)
+                                    status.text = "Live Swap active · real ONNX processing"
                                 }
-                            )
-                        } else {
-                            LiveFrameAnalyzer(
-                                pipeline = framePipeline,
-                                onFrameAccepted = {
-                                    runOnUiThread {
-                                        if (!isFinishing && !isDestroyed) status.text = "Live camera ready · frames flowing"
-                                    }
-                                },
-                                onFrameDropped = {
-                                    runOnUiThread {
-                                        if (!isFinishing && !isDestroyed) status.text = "Live camera · reducing backlog"
-                                    }
-                                },
-                                onFrameError = { error ->
-                                    runOnUiThread {
-                                        if (!isFinishing && !isDestroyed) status.text = "Frame processing error: ${error.message ?: "unsupported frame"}"
-                                    }
-                                }
-                            )
-                        }
-                    )
+                            } },
+                            onFrameDropped = { },
+                            onFrameError = { error -> runOnUiThread {
+                                if (!isFinishing && !isDestroyed) status.text = "Live Swap error: ${error.message ?: "model processing failed"}"
+                            } }
+                        )
+                    } else {
+                        LiveFrameAnalyzer(
+                            pipeline = framePipeline,
+                            onFrameAccepted = { runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Live camera ready · frames flowing" } },
+                            onFrameDropped = { },
+                            onFrameError = { error -> runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Frame processing error: ${error.message ?: "unsupported frame"}" } }
+                        )
+                    })
                 }
             provider.unbindAll()
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
