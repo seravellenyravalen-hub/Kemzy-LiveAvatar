@@ -110,7 +110,6 @@ class MainActivity : ComponentActivity() {
             if (liveSessionStore.isActive) {
                 StreamingFrameBus.take()?.let { frame ->
                     trackingAvatarView.setImageBitmap(frame)
-                    frame.recycle()
                 }
             }
             uiHandler.postDelayed(this, 33L)
@@ -321,7 +320,6 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     override fun onDestroy() {
-        // The foreground service, not the Activity, owns the live camera session.
         faceSwapEngine.close()
         voiceController.close()
         super.onDestroy()
