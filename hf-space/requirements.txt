@@ -1,0 +1,7 @@
+gradio>=5.44,<7
+spaces>=0.39
+insightface==0.7.3
+onnxruntime-gpu==1.23.2
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+huggingface_hub>=0.34
