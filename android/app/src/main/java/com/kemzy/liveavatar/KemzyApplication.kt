@@ -2,4 +2,6 @@ package com.kemzy.liveavatar
 
 import android.app.Application
 
-class KemzyApplication : Application()
+class KemzyApplication : Application() {
+    val privacyLock = PrivacyLock()
+}
