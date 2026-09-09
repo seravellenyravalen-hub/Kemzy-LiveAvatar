@@ -1,25 +1,16 @@
 package com.kemzy.liveavatar
 
 import android.Manifest
-import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.Recorder
-import androidx.camera.video.Recording
-import androidx.camera.video.VideoCapture
-import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import java.text.SimpleDateFormat
-import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -40,12 +31,11 @@ class LiveCameraController(
         onError = { onError(it.message ?: "Face tracking failed") }
     )
     private val faceSwapEngine = OnDeviceFaceSwapEngine(context.applicationContext)
+    private val avatarRecorder = AvatarSurfaceRecorder(context.applicationContext)
     private var cameraProvider: ProcessCameraProvider? = null
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var recording: Recording? = null
 
     val isReady: Boolean get() = faceSwapEngine.isReady
-    val isRecording: Boolean get() = recording != null
+    val isRecording: Boolean get() = avatarRecorder.isRecording
 
     fun setAvatar(uri: String) {
         if (faceSwapEngine.avatarUri != uri) {
@@ -81,18 +71,14 @@ class LiveCameraController(
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also { it.setAnalyzer(cameraExecutor) { image -> faceTracker.process(image) } }
-                val recorder = Recorder.Builder().build()
-                val video = VideoCapture.withOutput(recorder)
                 provider.unbindAll()
                 provider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_FRONT_CAMERA,
                     preview,
-                    analysis,
-                    video
+                    analysis
                 )
                 cameraProvider = provider
-                videoCapture = video
             } catch (error: Exception) {
                 onError("Camera could not start: ${error.message ?: "unknown error"}")
             }
@@ -100,62 +86,45 @@ class LiveCameraController(
     }
 
     fun pauseCamera() {
-        recording?.close()
-        recording = null
         cameraProvider?.unbindAll()
-        videoCapture = null
+        if (avatarRecorder.isRecording) {
+            val uri = avatarRecorder.stop()
+            onRecordingFinalized(uri)
+        }
     }
 
     fun startRecording() {
-        val capture = videoCapture ?: run {
-            onError("Camera recording is not ready")
+        if (!liveEnabled) {
+            onError("Start Live before recording")
             return
         }
-        if (recording != null) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             onError("Microphone permission required")
             return
         }
-
-        val name = "Kemzy-LiveAvatar-" +
-            SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(System.currentTimeMillis()) + ".mp4"
-        val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, name)
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Kemzy-LiveAvatar")
-            }
+        if (avatarRecorder.isRecording) return
+        if (!avatarRecorder.start()) {
+            onError("Avatar recording could not start on this device")
         }
-        val output = androidx.camera.video.MediaStoreOutputOptions.Builder(
-            context.contentResolver,
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        ).setContentValues(values).build()
-
-        recording = capture.output
-            .prepareRecording(context, output)
-            .withAudioEnabled()
-            .start(ContextCompat.getMainExecutor(context)) { event ->
-                if (event is VideoRecordEvent.Finalize) {
-                    val uri = if (!event.hasError()) event.outputResults.outputUri else null
-                    recording?.close()
-                    recording = null
-                    onRecordingFinalized(uri)
-                    if (event.hasError()) onError("Recording failed: ${event.error}")
-                }
-            }
     }
 
     fun stopRecording() {
-        recording?.stop()
+        if (!avatarRecorder.isRecording) return
+        val uri = avatarRecorder.stop()
+        onRecordingFinalized(uri)
+        if (uri == null) onError("Recording could not be saved")
     }
 
     fun release() {
         liveEnabled = false
-        recording?.close()
-        recording = null
+        if (avatarRecorder.isRecording) {
+            val uri = avatarRecorder.stop()
+            onRecordingFinalized(uri)
+        } else {
+            avatarRecorder.release()
+        }
         cameraProvider?.unbindAll()
         cameraProvider = null
-        videoCapture = null
         faceTracker.close()
         faceSwapEngine.close()
         cameraExecutor.shutdownNow()
@@ -176,7 +145,11 @@ class LiveCameraController(
             try {
                 if (faceSwapEngine.isReady && liveEnabled) {
                     val output = faceSwapEngine.processFrame(bitmap, tracking)
-                    if (output.isNeural && output.bitmap != null) onLiveFrame(output.bitmap)
+                    if (output.isNeural && output.bitmap != null) {
+                        val generated = output.bitmap
+                        if (avatarRecorder.isRecording) avatarRecorder.drawFrame(generated)
+                        ContextCompat.getMainExecutor(context).execute { onLiveFrame(generated) }
+                    }
                 }
             } catch (error: Exception) {
                 onError(error.message ?: "Live avatar processing failed")
