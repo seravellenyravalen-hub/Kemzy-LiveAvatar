@@ -9,7 +9,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Kemzy-LiveAvatar"
+        android:text="Kémzy àvátâr"
         android:textSize="28sp"
         android:textStyle="bold" />
 
@@ -17,7 +17,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
-        android:text="Enter your passcode to continue" />
+        android:text="Enter your PIN to continue" />
 
     <EditText
         android:id="@+id/passcodeInput"
@@ -25,8 +25,9 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="24dp"
         android:inputType="numberPassword"
-        android:maxLength="6"
-        android:hint="Passcode" />
+        android:maxLength="11"
+        android:hint="PIN"
+        android:imeOptions="actionDone" />
 
     <TextView
         android:id="@+id/passcodeError"
