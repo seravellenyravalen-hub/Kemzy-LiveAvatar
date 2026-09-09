@@ -33,14 +33,10 @@ class OnDeviceFaceSwapEngine(
             state = LiveFaceEngineState.Fallback("No avatar selected")
             return state
         }
-
-        // Deterministic test/fallback path: an explicitly supplied model inventory
-        // must be honored before requiring a real Android context or filesystem.
         if (!missingModelsOverride.isNullOrEmpty()) {
             state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
             return state
         }
-
         val appContext = context ?: run {
             state = LiveFaceEngineState.Fallback("Android context is required")
             return state
@@ -51,7 +47,7 @@ class OnDeviceFaceSwapEngine(
             ensureRequiredModels(appContext, store)
             val missing = store.missingRequiredModels().map { it.id }
             if (missing.isNotEmpty()) {
-                state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
+                state = LiveFaceEngineState.Fallback("Required runtime models are unavailable: ${missing.joinToString()}")
                 return state
             }
 
@@ -63,13 +59,12 @@ class OnDeviceFaceSwapEngine(
             val factory = OnnxSessionFactory()
             val arcFace = FaceModelManifest.required.first { it.id == "arcface-embedder" }
             val swapper = FaceModelManifest.required.first { it.id == "face-swapper" }
-            val emap = FaceModelManifest.required.first { it.id == "inswapper-emap" }
             embedderSession = factory.create(store.fileFor(arcFace).absolutePath, backend)
             swapperSession = factory.create(store.fileFor(swapper).absolutePath, backend)
 
             val activeProcessor = NeuralFaceSwapProcessor(appContext)
             activeProcessor.attachSessions(embedderSession!!, swapperSession!!)
-            val error = activeProcessor.prepareAvatar(reference, store.fileFor(emap))
+            val error = activeProcessor.prepareAvatar(reference)
             if (error != null) {
                 closeSessions()
                 state = LiveFaceEngineState.Fallback(error)
