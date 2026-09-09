@@ -18,7 +18,7 @@ import androidx.lifecycle.LifecycleService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Owns the camera session after the Activity leaves the foreground. */
+/** Owns the camera session only after the visible Activity has moved to the background. */
 class AvatarStreamingService : LifecycleService() {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val modelExecutor = Executors.newSingleThreadExecutor()
@@ -66,7 +66,7 @@ class AvatarStreamingService : LifecycleService() {
             return START_NOT_STICKY
         }
 
-        val reference = intent?.getStringExtra(EXTRA_REFERENCE)
+        val reference = intent?.getStringExtra(EXTRA_REFERENCE) ?: lockedReference
         if (reference.isNullOrBlank()) {
             stopSelf()
             return START_NOT_STICKY
@@ -74,6 +74,11 @@ class AvatarStreamingService : LifecycleService() {
 
         if (lockedReference == null) lockedReference = reference
         if (lockedReference != reference) return START_STICKY
+
+        if (intent?.action == ACTION_ENABLE_BACKGROUND_CAMERA) {
+            bindCameraWithRetry()
+            return START_STICKY
+        }
 
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(
@@ -85,10 +90,11 @@ class AvatarStreamingService : LifecycleService() {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
 
+        // ARM is deliberately started while the Activity is visible. The camera itself is
+        // not acquired until ACTION_ENABLE_BACKGROUND_CAMERA arrives after onStop().
         modelExecutor.execute {
             faceSwapEngine.setAvatar(reference)
             faceSwapEngine.prepareAvatar()
-            if (faceSwapEngine.isReady) bindCameraWithRetry()
         }
         return START_STICKY
     }
@@ -151,8 +157,6 @@ class AvatarStreamingService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Swiping the protected app task away is an actual stop. Ordinary Home/Camera/app
-        // switching does not call this callback, so the live foreground service can continue.
         (application as PrivacyApplication).lock()
         stopStreaming()
         super.onTaskRemoved(rootIntent)
@@ -172,6 +176,8 @@ class AvatarStreamingService : LifecycleService() {
 
     companion object {
         const val ACTION_STOP = "com.kemzy.liveavatar.action.STOP"
+        const val ACTION_ARM = "com.kemzy.liveavatar.action.ARM"
+        const val ACTION_ENABLE_BACKGROUND_CAMERA = "com.kemzy.liveavatar.action.ENABLE_BACKGROUND_CAMERA"
         const val EXTRA_REFERENCE = "com.kemzy.liveavatar.extra.REFERENCE"
         private const val CHANNEL_ID = "kemzy_live_avatar"
         private const val NOTIFICATION_ID = 9001
