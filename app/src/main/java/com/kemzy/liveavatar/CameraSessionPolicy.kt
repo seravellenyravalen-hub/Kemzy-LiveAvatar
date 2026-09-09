@@ -16,6 +16,12 @@ class CameraSessionPolicy {
     var shouldReleaseCamera: Boolean = false
         private set
 
+    // The visible live screen is a complete CameraX pipeline, not an analysis-only stream.
+    val requiresPreview: Boolean = true
+    val requiresAnalysis: Boolean = true
+    val requiresVideoCapture: Boolean = true
+    val requiresAudio: Boolean = true
+
     fun start(referenceUri: String) {
         require(referenceUri.isNotBlank())
         check(!isRunning) { "Camera session already running" }
