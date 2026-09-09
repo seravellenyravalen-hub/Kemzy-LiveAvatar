@@ -1,9 +1,6 @@
 package com.kemzy.liveavatar
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Matrix
-import android.graphics.Paint
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -41,15 +38,15 @@ class ArcFaceOnnxRecognizer(
                 }
             }
         }
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(values), longArrayOf(1, 3, 112, 112)).use { tensor ->
+        OnnxTensor.createTensor(
+            environment,
+            FloatBuffer.wrap(values),
+            longArrayOf(1, 3, 112, 112)
+        ).use { tensor ->
             session.run(mapOf(resolvedInput to tensor)).use { result ->
-                val raw = result[resolvedOutput]?.value
+                val raw = result.get(resolvedOutput).orElse(null)?.getValue()
                     ?: error("ArcFace returned no embedding")
-                val vector = when (raw) {
-                    is Array<*> -> flattenFloats(raw)
-                    is FloatArray -> raw
-                    else -> error("Unsupported ArcFace output type: ${raw::class.java.name}")
-                }
+                val vector = flattenFloats(raw)
                 require(vector.size >= 512) { "ArcFace embedding must contain at least 512 values" }
                 return l2Normalize(vector.copyOf(512))
             }
@@ -73,10 +70,10 @@ class InSwapperOnnx(
     override fun swap(alignedTarget: Bitmap, sourceEmbedding: FloatArray): Bitmap {
         require(sourceEmbedding.size == 512) { "INSwapper requires a 512-D source embedding" }
         val imageName = imageInputName ?: inputs.firstOrNull { name ->
-            val shape = session.inputInfo[name]?.info
-            shape?.toString()?.contains("128") == true
+            val shape = session.inputInfo[name]?.getInfo()?.toString()
+            shape?.contains("128") == true
         } ?: inputs.first()
-        val embeddingName = embeddingInputName ?: inputs.firstOrNull { it != imageName }
+        val embeddingName = embeddingInputName ?: inputs.firstOrNull { name -> name != imageName }
             ?: error("INSwapper model must expose image and embedding inputs")
         val outName = outputName ?: outputs.first()
 
@@ -97,16 +94,23 @@ class InSwapperOnnx(
             }
         }
 
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(pixels), longArrayOf(1, 3, 128, 128)).use { imageTensor ->
-            OnnxTensor.createTensor(environment, FloatBuffer.wrap(sourceEmbedding), longArrayOf(1, 512)).use { embeddingTensor ->
+        OnnxTensor.createTensor(
+            environment,
+            FloatBuffer.wrap(pixels),
+            longArrayOf(1, 3, 128, 128)
+        ).use { imageTensor ->
+            OnnxTensor.createTensor(
+                environment,
+                FloatBuffer.wrap(sourceEmbedding),
+                longArrayOf(1, 512)
+            ).use { embeddingTensor ->
                 session.run(mapOf(imageName to imageTensor, embeddingName to embeddingTensor)).use { result ->
-                    val raw = result[outName]?.value ?: error("INSwapper returned no image")
-                    val output = when (raw) {
-                        is Array<*> -> flattenFloats(raw)
-                        is FloatArray -> raw
-                        else -> error("Unsupported INSwapper output type: ${raw::class.java.name}")
+                    val raw = result.get(outName).orElse(null)?.getValue()
+                        ?: error("INSwapper returned no image")
+                    val output = flattenFloats(raw)
+                    require(output.size >= 3 * 128 * 128) {
+                        "INSwapper output is smaller than 128x128 RGB"
                     }
-                    require(output.size >= 3 * 128 * 128) { "INSwapper output is smaller than 128x128 RGB" }
                     return bitmapFromNchw(output)
                 }
             }
@@ -116,12 +120,12 @@ class InSwapperOnnx(
     override fun close() = session.close()
 }
 
-private fun flattenFloats(value: Any): FloatArray {
-    return when (value) {
-        is FloatArray -> value
-        is Array<*> -> value.flatMap { flattenFloats(it ?: emptyArray<Any>()).asList() }.toFloatArray()
-        else -> error("Expected float tensor, got ${value::class.java.name}")
-    }
+private fun flattenFloats(value: Any): FloatArray = when (value) {
+    is FloatArray -> value
+    is Array<*> -> value.flatMap { element ->
+        if (element == null) emptyList() else flattenFloats(element).asList()
+    }.toFloatArray()
+    else -> error("Expected float tensor, got ${value::class.java.name}")
 }
 
 private fun l2Normalize(values: FloatArray): FloatArray {
@@ -131,12 +135,12 @@ private fun l2Normalize(values: FloatArray): FloatArray {
 
 private fun bitmapFromNchw(values: FloatArray): Bitmap {
     val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
-    var index = 0
     for (y in 0 until 128) {
         for (x in 0 until 128) {
-            val r = ((values[index].coerceIn(-1f, 1f) + 1f) * 127.5f).toInt(); index++
-            val g = ((values[128 * 128 + y * 128 + x].coerceIn(-1f, 1f) + 1f) * 127.5f).toInt()
-            val b = ((values[2 * 128 * 128 + y * 128 + x].coerceIn(-1f, 1f) + 1f) * 127.5f).toInt()
+            val base = y * 128 + x
+            val r = ((values[base].coerceIn(-1f, 1f) + 1f) * 127.5f).toInt()
+            val g = ((values[128 * 128 + base].coerceIn(-1f, 1f) + 1f) * 127.5f).toInt()
+            val b = ((values[2 * 128 * 128 + base].coerceIn(-1f, 1f) + 1f) * 127.5f).toInt()
             bitmap.setPixel(x, y, android.graphics.Color.rgb(r, g, b))
         }
     }
