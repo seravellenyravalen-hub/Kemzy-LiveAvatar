@@ -30,7 +30,6 @@ class PrivacyLockActivity : FragmentActivity() {
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        // Do not allow the privacy gate to be dismissed.
         moveTaskToBack(false)
     }
 
@@ -43,7 +42,7 @@ class PrivacyLockActivity : FragmentActivity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "Kemzy-LiveAvatar"
+            text = "Kémzy àvátâr"
             textSize = 26f
             gravity = Gravity.CENTER
             setTextColor(0xFFFFFFFF.toInt())
@@ -110,7 +109,6 @@ class PrivacyLockActivity : FragmentActivity() {
             passcode.text?.clear()
             return
         }
-
         showBiometricPrompt(enableAfterSuccess = !biometricEnabled)
     }
 
@@ -139,7 +137,7 @@ class PrivacyLockActivity : FragmentActivity() {
         prompt.authenticate(
             BiometricPrompt.PromptInfo.Builder()
                 .setTitle(if (enableAfterSuccess) "Confirm fingerprint setup" else "Confirm fingerprint")
-                .setSubtitle("Your Kemzy-LiveAvatar passcode was accepted first")
+                .setSubtitle("Your Kémzy àvátâr passcode was accepted first")
                 .setDescription("Fingerprint is optional. Cancel to continue with passcode only.")
                 .setNegativeButtonText("Cancel")
                 .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
