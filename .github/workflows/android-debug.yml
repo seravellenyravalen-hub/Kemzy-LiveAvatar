@@ -30,7 +30,8 @@ jobs:
 
       - name: Build debug APK
         env:
-          KEMZY_PRIVACY_PASSCODE: CONFIGURE_AT_BUILD_TIME
+          # Debug/test build passcode requested for the Kemzy device test.
+          KEMZY_PRIVACY_PASSCODE: 081645
         run: gradle --no-daemon assembleDebug
 
       - name: Upload debug APK
