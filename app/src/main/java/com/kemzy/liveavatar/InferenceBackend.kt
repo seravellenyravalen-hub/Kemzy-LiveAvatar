@@ -9,10 +9,10 @@ enum class InferenceBackend {
 object InferenceBackendSelector {
     fun candidates(apiLevel: Int, nnapiAvailable: Boolean): List<InferenceBackend> {
         if (apiLevel < 27) return listOf(InferenceBackend.CPU)
-        return buildList {
-            add(InferenceBackend.XNNPACK)
-            add(InferenceBackend.CPU)
-            if (nnapiAvailable) add(InferenceBackend.NNAPI)
+        return if (nnapiAvailable) {
+            listOf(InferenceBackend.XNNPACK, InferenceBackend.CPU, InferenceBackend.NNAPI)
+        } else {
+            listOf(InferenceBackend.XNNPACK, InferenceBackend.CPU)
         }
     }
 
