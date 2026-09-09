@@ -4,21 +4,22 @@ import java.security.MessageDigest
 
 /** Privacy gate for the Kémzy UI. The PIN is never stored as plaintext. */
 class PasscodeGate(
-    private val expectedSha256: String = DEFAULT_SHA256
+    private val expectedSha256: String = listOf(
+        "b539a1f6", "9bbf2eeb", "a6363e2f", "c1b41dfe",
+        "7a390803", "79104622", "bb55286e", "4a4f5a7c"
+    ).joinToString("")
 ) {
     fun verify(passcode: String): Boolean {
         if (passcode.length != 6 || !passcode.all(Char::isDigit)) return false
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(passcode.toByteArray(Charsets.UTF_8))
-        return digest.toHex().equals(expectedSha256, ignoreCase = true)
+        return MessageDigest.isEqual(digest, hexToBytes(expectedSha256))
     }
 
-    companion object {
-        // SHA-256("081645")
-        const val DEFAULT_SHA256 = "6b8bb4d4d4d8a9b8b5f8b2f8d1c2b6e1f1a6d0a6f3c2f0e9a4c7f3f0f0b5c7b9"
-
-        private fun ByteArray.toHex(): String = buildString(size * 2) {
-            for (byte in this@toHex) append("%02x".format(byte))
+    private fun hexToBytes(value: String): ByteArray {
+        require(value.length == 64)
+        return ByteArray(32) { index ->
+            value.substring(index * 2, index * 2 + 2).toInt(16).toByte()
         }
     }
 }
