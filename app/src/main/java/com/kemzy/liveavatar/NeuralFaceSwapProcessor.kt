@@ -14,8 +14,6 @@ import ai.onnxruntime.OrtSession
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetector
-import com.google.mlkit.vision.face.FaceDetectorOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -92,11 +90,7 @@ class NeuralFaceSwapProcessor(
     }
 
     private fun detectAndCropSourceFace(source: Bitmap): Bitmap {
-        val detector = FaceDetection.getClient(
-            FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .build()
+        val detector = FaceDetection.getClient()
         return try {
             val image = InputImage.fromBitmap(source, 0)
             val faces = Tasks.await(detector.process(image))
@@ -138,7 +132,7 @@ class NeuralFaceSwapProcessor(
         )
         canvas.drawBitmap(swapped, left.toFloat(), top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
         val maskPaintOnCanvas = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.DST_IN)
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         }
         canvas.drawBitmap(mask, left.toFloat(), top.toFloat(), maskPaintOnCanvas)
         maskPaintOnCanvas.xfermode = null
