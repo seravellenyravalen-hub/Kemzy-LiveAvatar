@@ -29,34 +29,38 @@ class AvatarStreamingService : LifecycleService() {
     private var cameraProvider: ProcessCameraProvider? = null
     private var lockedReference: String? = null
     private var retryCount = 0
+    private var modelRetryCount = 0
+    private var virtualCameraBridge: VirtualCameraBridge? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
+        virtualCameraBridge = StockAndroidVirtualCameraBridge(applicationContext)
         faceTracker = FaceTracker(
             onResult = { tracking, bitmap ->
-                if (bitmap != null) {
-                    if (!modelFrameBusy.compareAndSet(false, true)) {
-                        bitmap.recycle()
-                    } else {
-                        modelExecutor.execute {
-                            try {
-                                if (faceSwapEngine.isReady) {
-                                    val output = faceSwapEngine.processFrame(bitmap, tracking)
-                                    if (output.isNeural && output.bitmap != null) {
-                                        StreamingFrameBus.publish(output.bitmap)
-                                    }
-                                }
-                            } finally {
-                                bitmap.recycle()
-                                modelFrameBusy.set(false)
+                if (bitmap == null) return@FaceTracker
+                if (!modelFrameBusy.compareAndSet(false, true)) {
+                    bitmap.recycle()
+                    return@FaceTracker
+                }
+                modelExecutor.execute {
+                    try {
+                        if (faceSwapEngine.isReady && lockedReference != null) {
+                            val output = faceSwapEngine.processFrame(bitmap, tracking)
+                            // Never publish an unprocessed camera frame as the avatar.
+                            if (output.isNeural && output.bitmap != null) {
+                                StreamingFrameBus.publish(output.bitmap)
+                                virtualCameraBridge?.publishFrame(output.bitmap)
                             }
                         }
+                    } finally {
+                        bitmap.recycle()
+                        modelFrameBusy.set(false)
                     }
                 }
             },
-            onError = { /* Keep diagnostics internal; never mutate the locked reference. */ }
+            onError = { /* Internal diagnostics stay out of the normal UI. */ }
         )
     }
 
@@ -75,6 +79,12 @@ class AvatarStreamingService : LifecycleService() {
         if (lockedReference == null) lockedReference = reference
         if (lockedReference != reference) return START_STICKY
 
+        startCameraForeground()
+        modelExecutor.execute { prepareAndStart(reference) }
+        return START_STICKY
+    }
+
+    private fun startCameraForeground() {
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(
                 NOTIFICATION_ID,
@@ -84,16 +94,34 @@ class AvatarStreamingService : LifecycleService() {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
+    }
 
-        modelExecutor.execute {
-            faceSwapEngine.setAvatar(reference)
-            faceSwapEngine.prepareAvatar()
-            if (faceSwapEngine.isReady) bindCameraWithRetry()
+    private fun prepareAndStart(reference: String) {
+        faceSwapEngine.setAvatar(reference)
+        modelRetryCount = 0
+        while (lockedReference == reference && !faceSwapEngine.isReady && modelRetryCount < MAX_MODEL_RETRIES) {
+            try {
+                faceSwapEngine.prepareAvatar()
+            } catch (_: Throwable) {
+                // Keep failures internal and retry with bounded backoff.
+            }
+            if (!faceSwapEngine.isReady) {
+                modelRetryCount++
+                if (modelRetryCount < MAX_MODEL_RETRIES) {
+                    try {
+                        Thread.sleep(modelBackoffMs(modelRetryCount))
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return
+                    }
+                }
+            }
         }
-        return START_STICKY
+        if (lockedReference == reference && faceSwapEngine.isReady) bindCameraWithRetry()
     }
 
     private fun bindCameraWithRetry() {
+        if (lockedReference == null) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
@@ -115,7 +143,7 @@ class AvatarStreamingService : LifecycleService() {
 
     private fun scheduleCameraRetry() {
         if (lockedReference == null) return
-        retryCount = (retryCount + 1).coerceAtMost(8)
+        retryCount = (retryCount + 1).coerceAtMost(MAX_CAMERA_RETRIES)
         val delay = (500L * (1L shl (retryCount - 1).coerceAtMost(5))).coerceAtMost(15_000L)
         mainHandler.postDelayed({ bindCameraWithRetry() }, delay)
     }
@@ -124,6 +152,8 @@ class AvatarStreamingService : LifecycleService() {
         cameraProvider?.unbindAll()
         cameraProvider = null
         lockedReference = null
+        retryCount = 0
+        modelRetryCount = 0
         StreamingFrameBus.clear()
         faceSwapEngine.clearAvatar()
         mainHandler.removeCallbacksAndMessages(null)
@@ -134,8 +164,8 @@ class AvatarStreamingService : LifecycleService() {
     private fun buildNotification() =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_kemzy_liveavatar)
-            .setContentTitle("Kemzy-LiveAvatar")
-            .setContentText("Live avatar camera is active")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.live_avatar_notification))
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -143,7 +173,11 @@ class AvatarStreamingService : LifecycleService() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Live Avatar", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(
+                    CHANNEL_ID,
+                    getString(R.string.live_avatar_channel),
+                    NotificationManager.IMPORTANCE_LOW
+                )
             )
         }
     }
@@ -155,6 +189,8 @@ class AvatarStreamingService : LifecycleService() {
         cameraProvider = null
         faceTracker.close()
         faceSwapEngine.close()
+        virtualCameraBridge?.close()
+        virtualCameraBridge = null
         StreamingFrameBus.clear()
         mainHandler.removeCallbacksAndMessages(null)
         analysisExecutor.shutdownNow()
@@ -162,10 +198,15 @@ class AvatarStreamingService : LifecycleService() {
         super.onDestroy()
     }
 
+    private fun modelBackoffMs(attempt: Int): Long =
+        (750L * (1L shl (attempt - 1).coerceAtMost(3))).coerceAtMost(6_000L)
+
     companion object {
         const val ACTION_STOP = "com.kemzy.liveavatar.action.STOP"
         const val EXTRA_REFERENCE = "com.kemzy.liveavatar.extra.REFERENCE"
         private const val CHANNEL_ID = "kemzy_live_avatar"
         private const val NOTIFICATION_ID = 9001
+        private const val MAX_MODEL_RETRIES = 3
+        private const val MAX_CAMERA_RETRIES = 8
     }
 }
