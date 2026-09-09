@@ -67,7 +67,8 @@ class VirtualCameraBridge(
     private fun associateAndCreate() {
         val cdm = service.getSystemService(CompanionDeviceManager::class.java)
         val existing = cdm?.myAssociations?.firstOrNull {
-            it.packageName == service.packageName && it.displayName?.toString() == CAMERA_NAME
+            it.packageName == service.applicationContext.packageName &&
+                it.displayName?.toString() == CAMERA_NAME
         }
         if (existing != null) {
             createVirtualDevice(existing)
@@ -107,7 +108,7 @@ class VirtualCameraBridge(
                 ?: throw IllegalStateException("VirtualDeviceManager is unavailable")
             val managerClass = Class.forName("android.companion.virtual.VirtualDeviceManager")
             val paramsClass = Class.forName("android.companion.virtual.VirtualDeviceParams")
-            val builderClass = Class.forName("android.companion.virtual.VirtualDeviceParams$Builder")
+            val builderClass = Class.forName("android.companion.virtual.VirtualDeviceParams.${'$'}Builder")
             val builder = builderClass.getConstructor().newInstance()
             builderClass.getMethod("setName", String::class.java).invoke(builder, CAMERA_NAME)
             val policyType = paramsClass.getField("POLICY_TYPE_CAMERA").getInt(null)
@@ -119,7 +120,7 @@ class VirtualCameraBridge(
             virtualDevice = create.invoke(manager, association.id, params)
 
             val configClass = Class.forName("android.companion.virtual.camera.VirtualCameraConfig")
-            val configBuilderClass = Class.forName("android.companion.virtual.camera.VirtualCameraConfig$Builder")
+            val configBuilderClass = Class.forName("android.companion.virtual.camera.VirtualCameraConfig.${'$'}Builder")
             val configBuilder = configBuilderClass.getConstructor(String::class.java).newInstance(CAMERA_NAME)
             configBuilderClass.getMethod(
                 "addStreamConfig", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
