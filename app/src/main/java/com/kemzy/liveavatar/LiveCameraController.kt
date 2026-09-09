@@ -13,10 +13,7 @@ import androidx.lifecycle.LifecycleOwner
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Foreground camera owner. Keeping Preview and Analysis in the same lifecycle
- * prevents the old service-owned unbindAll() path from producing a black preview.
- */
+/** Foreground CameraX owner for real preview + live neural processing. */
 class LiveCameraController(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
@@ -35,28 +32,24 @@ class LiveCameraController(
     init {
         tracker = FaceTracker(
             onResult = { tracking, bitmap ->
-                if (!running || bitmap == null) {
-                    bitmap?.recycle()
-                    return@FaceTracker
-                }
-                if (!modelBusy.compareAndSet(false, true)) {
-                    bitmap.recycle()
-                    return@FaceTracker
-                }
-                modelExecutor.execute {
-                    try {
-                        val output = engine.processFrame(bitmap, tracking)
-                        if (output.isNeural && output.bitmap != null && running) {
-                            onProcessedFrame(output.bitmap)
-                        } else {
-                            output.bitmap?.recycle()
+                if (running && bitmap != null && modelBusy.compareAndSet(false, true)) {
+                    modelExecutor.execute {
+                        try {
+                            val output = engine.processFrame(bitmap, tracking)
+                            if (output.isNeural && output.bitmap != null && running) {
+                                onProcessedFrame(output.bitmap)
+                            } else {
+                                output.bitmap?.recycle()
+                            }
+                        } catch (error: Exception) {
+                            onStatus("Live processing error: ${error.message ?: "unknown"}")
+                        } finally {
+                            bitmap.recycle()
+                            modelBusy.set(false)
                         }
-                    } catch (error: Exception) {
-                        onStatus("Live processing error: ${error.message ?: "unknown"}")
-                    } finally {
-                        bitmap.recycle()
-                        modelBusy.set(false)
                     }
+                } else {
+                    bitmap?.recycle()
                 }
             },
             onError = { onStatus("Face tracking error: ${it.message ?: "unknown"}") }
@@ -75,23 +68,14 @@ class LiveCameraController(
             try {
                 val cameraProvider = future.get()
                 provider = cameraProvider
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
+                val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
-                    .also { useCase ->
-                        useCase.setAnalyzer(analysisExecutor) { image -> tracker.process(image) }
-                    }
+                    .also { useCase -> useCase.setAnalyzer(analysisExecutor) { image -> tracker.process(image) } }
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_FRONT_CAMERA,
-                    preview,
-                    analysis
-                )
+                cameraProvider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
                 onStatus("Camera live — processing selected face")
             } catch (error: Exception) {
                 running = false
