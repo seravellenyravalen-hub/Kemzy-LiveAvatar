@@ -11,8 +11,16 @@ class LiveSessionStore(context: Context) {
     val reference: String?
         get() = prefs.getString(KEY_REFERENCE, null)
 
+    fun setReference(reference: String) {
+        prefs.edit().putString(KEY_REFERENCE, reference).apply()
+    }
+
     fun markActive(reference: String) {
         prefs.edit().putBoolean(KEY_ACTIVE, true).putString(KEY_REFERENCE, reference).apply()
+    }
+
+    fun clearActive() {
+        prefs.edit().putBoolean(KEY_ACTIVE, false).apply()
     }
 
     fun clear() {
