@@ -1,6 +1,7 @@
 package com.kemzy.liveavatar
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.TextView
@@ -15,6 +16,13 @@ import androidx.core.content.ContextCompat
 class MainActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var status: TextView
+    private val appLock by lazy { (application as KemzyApplication).privacyLock }
+
+    private val lockLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != RESULT_OK) finish()
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -27,6 +35,14 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.cameraPreview)
         status = findViewById(R.id.statusText)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (appLock.isLocked()) {
+            lockLauncher.launch(Intent(this, LockActivity::class.java))
+            return
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
         } else {
@@ -34,9 +50,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        stopCamera()
+        appLock.lock()
+        super.onPause()
+    }
+
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
+            if (isFinishing || isDestroyed || appLock.isLocked()) return@addListener
             val provider = future.get()
             val preview = Preview.Builder().build().also {
                 it.surfaceProvider = previewView.surfaceProvider
@@ -45,5 +68,9 @@ class MainActivity : ComponentActivity() {
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview)
             status.text = "Live camera ready"
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun stopCamera() {
+        ProcessCameraProvider.getInstance(this).get().unbindAll()
     }
 }
