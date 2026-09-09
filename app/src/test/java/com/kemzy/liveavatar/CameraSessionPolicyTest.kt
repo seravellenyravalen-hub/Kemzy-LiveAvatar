@@ -36,4 +36,13 @@ class CameraSessionPolicyTest {
         policy.onNetworkChanged()
         assertTrue(policy.isReferenceLockedTo("avatar-a"))
     }
+
+    @Test
+    fun liveScreenRequiresPreviewAnalysisVideoAndAudio() {
+        val policy = CameraSessionPolicy()
+        assertTrue(policy.requiresPreview)
+        assertTrue(policy.requiresAnalysis)
+        assertTrue(policy.requiresVideoCapture)
+        assertTrue(policy.requiresAudio)
+    }
 }
