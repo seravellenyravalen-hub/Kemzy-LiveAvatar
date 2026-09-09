@@ -237,7 +237,12 @@ class MainActivity : ComponentActivity() {
             prepareAvatarEngine()
             return
         }
-        liveSessionStore.isActive = true
+        val reference = currentAvatarUri()
+        if (reference.isNullOrBlank()) {
+            statusView.text = "Choose a source photo first"
+            return
+        }
+        liveSessionStore.markActive(reference)
         processedView.visibility = View.VISIBLE
         liveCameraController.start()
         startButton.setEnabled(false)
@@ -247,7 +252,7 @@ class MainActivity : ComponentActivity() {
 
     private fun stopSession() {
         liveCameraController.stop()
-        liveSessionStore.isActive = false
+        liveSessionStore.clearActive()
         processedView.visibility = View.GONE
         stopButton.setEnabled(false)
         updateControls()
@@ -283,12 +288,12 @@ class MainActivity : ComponentActivity() {
     private fun currentAvatarUri(): String? = liveSessionStore.reference
 
     private fun saveAvatarUri(uri: String) {
-        liveSessionStore.reference = uri
+        liveSessionStore.setReference(uri)
     }
 
     override fun onUserLeaveHint() {
         if (::liveCameraController.isInitialized) liveCameraController.stop()
-        liveSessionStore.isActive = false
+        liveSessionStore.clearActive()
         (application as PrivacyApplication).lock()
         super.onUserLeaveHint()
     }
