@@ -14,6 +14,11 @@ object StreamingFrameBus {
 
     fun take(): Bitmap? = latest.getAndSet(null)
 
+    /** Returns a copy without consuming the frame, so independent sinks can use it. */
+    fun snapshot(): Bitmap? = latest.get()?.let { current ->
+        if (current.isRecycled) null else current.copy(Bitmap.Config.ARGB_8888, false)
+    }
+
     fun clear() {
         latest.getAndSet(null)?.recycle()
     }
