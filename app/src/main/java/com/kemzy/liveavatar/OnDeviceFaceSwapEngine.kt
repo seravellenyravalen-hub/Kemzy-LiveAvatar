@@ -33,16 +33,23 @@ class OnDeviceFaceSwapEngine(
             state = LiveFaceEngineState.Fallback("No avatar selected")
             return state
         }
-        val appContext = context ?: run {
+
+        val appContext = context
+        val store = if (appContext != null) ModelStore(appContext) else null
+        val missing = missingModelsOverride ?: store?.missingRequiredModels()?.map { it.id }.orEmpty()
+        if (missing.isNotEmpty()) {
+            state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
+            return state
+        }
+        if (appContext == null || store == null) {
             state = LiveFaceEngineState.Fallback("Android context is required")
             return state
         }
 
         return try {
-            val store = ModelStore(appContext)
             ensureRequiredModels(appContext, store)
-            val missing = missingModelsOverride ?: store.missingRequiredModels().map { it.id }
-            if (missing.isNotEmpty()) {
+            val remaining = store.missingRequiredModels().map { it.id }
+            if (remaining.isNotEmpty()) {
                 state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
                 return state
             }
