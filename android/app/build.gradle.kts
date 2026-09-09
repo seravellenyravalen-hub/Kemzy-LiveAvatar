@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.kemzy.liveavatar"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.kemzy.liveavatar"
