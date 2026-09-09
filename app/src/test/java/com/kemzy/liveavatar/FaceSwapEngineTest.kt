@@ -11,11 +11,15 @@ class FaceSwapEngineTest {
     }
 
     @Test
-    fun engineBecomesReadyAfterAvatarSelection() {
+    fun previewEngineRemainsFallbackAfterAvatarSelection() {
         val engine = PreviewFaceSwapEngine()
         engine.setAvatar("content://avatar")
-        assertEquals(true, engine.isReady)
+        assertEquals(false, engine.isReady)
         assertEquals("content://avatar", engine.avatarUri)
+        assertEquals(
+            LiveFaceEngineState.Fallback("Neural face-swap models are not installed"),
+            engine.prepareAvatar()
+        )
     }
 
     @Test
