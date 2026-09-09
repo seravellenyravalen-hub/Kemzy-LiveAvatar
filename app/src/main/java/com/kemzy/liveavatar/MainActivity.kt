@@ -3,13 +3,16 @@ package com.kemzy.liveavatar
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -22,6 +25,7 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     private val streamingReferenceLock = StreamingReferenceLock()
     private val voiceSessionPolicy = VoiceSessionPolicy()
+    private val passcodeGate = PasscodeGate()
     private lateinit var referenceImageStore: ReferenceImageStore
     private lateinit var liveSessionStore: LiveSessionStore
     private lateinit var faceSwapEngine: FaceSwapEngine
@@ -38,11 +42,17 @@ class MainActivity : ComponentActivity() {
     private lateinit var recordVoiceButton: Button
     private lateinit var importVoiceButton: Button
     private lateinit var playVoiceButton: Button
+    private lateinit var contentRoot: View
+    private lateinit var privacyGate: View
+    private lateinit var passcodeInput: EditText
+    private lateinit var passcodeStatus: TextView
     private var currentVoiceFile: File? = null
+    private var autoStartAfterPreparation = false
+    private var unlockedForCurrentVisit = false
     private val uiHandler = Handler(Looper.getMainLooper())
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri == null || liveSessionStore.isActive) return@registerForActivityResult
+        if (uri == null || liveSessionStore.isActive || !unlockedForCurrentVisit) return@registerForActivityResult
         runCatching {
             val previous = currentAvatarUri()
             val localUri = referenceImageStore.persist(uri)
@@ -55,13 +65,18 @@ class MainActivity : ComponentActivity() {
             faceSwapEngine.setAvatar(localUri)
             avatarPreview.setImageURI(Uri.parse(localUri))
             avatarPreview.visibility = View.VISIBLE
+            autoStartAfterPreparation = true
+            statusView.text = "Preparing your live avatar"
             prepareAvatarEngine()
             updateControls()
+        }.onFailure {
+            statusView.text = "Avatar could not be loaded"
+            autoStartAfterPreparation = false
         }
     }
 
     private val pickVoice = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null || liveSessionStore.isActive) return@registerForActivityResult
+        if (uri == null || liveSessionStore.isActive || !unlockedForCurrentVisit) return@registerForActivityResult
         runCatching {
             if (!voiceSessionPolicy.select(VoiceSourceType.IMPORTED_FILE)) return@runCatching
             currentVoiceFile = voiceAssetStore.import(uri)
@@ -77,6 +92,7 @@ class MainActivity : ComponentActivity() {
     private val requestCameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         updateControls()
         if (!granted) statusView.text = "Camera permission required"
+        else if (granted && autoStartAfterPreparation && faceSwapEngine.isReady) startSession()
     }
 
     private val requestMicrophonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -92,7 +108,19 @@ class MainActivity : ComponentActivity() {
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         buildUi()
         restoreSessionAndAvatar()
-        if (hasCameraPermission()) updateControls() else requestCameraPermission.launch(Manifest.permission.CAMERA)
+        lockForVisit()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::privacyGate.isInitialized) {
+            if (unlockedForCurrentVisit) {
+                unlockForVisit()
+            } else {
+                lockForVisit()
+            }
+        }
+        uiHandler.post(framePoller)
     }
 
     override fun onStart() {
@@ -102,6 +130,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         uiHandler.removeCallbacks(framePoller)
+        if (::privacyGate.isInitialized) lockForVisit()
         super.onStop()
     }
 
@@ -136,18 +165,24 @@ class MainActivity : ComponentActivity() {
     private fun prepareAvatarEngine() {
         Thread {
             faceSwapEngine.prepareAvatar()
-            runOnUiThread { updateControls() }
+            runOnUiThread {
+                updateControls()
+                if (autoStartAfterPreparation && faceSwapEngine.isReady && hasCameraPermission() && !liveSessionStore.isActive) {
+                    autoStartAfterPreparation = false
+                    startSession()
+                }
+            }
         }.start()
     }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF000000.toInt())
+            setBackgroundColor(Color.BLACK)
         }
         root.addView(TextView(this).apply {
             text = getString(R.string.app_name)
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(Color.WHITE)
             textSize = 22f
             gravity = Gravity.CENTER
             setPadding(16, 18, 16, 10)
@@ -162,7 +197,7 @@ class MainActivity : ComponentActivity() {
         trackingAvatarView = ImageView(this).apply {
             visibility = View.GONE
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(0xFF000000.toInt())
+            setBackgroundColor(Color.BLACK)
         }
         container.addView(trackingAvatarView, FrameLayout.LayoutParams(-1, -1))
         root.addView(container, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -181,7 +216,7 @@ class MainActivity : ComponentActivity() {
         root.addView(selectAvatarButton, LinearLayout.LayoutParams(-1, -2).apply { setMargins(16, 4, 16, 4) })
 
         statusView = TextView(this).apply {
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(Color.WHITE)
             textSize = 15f
             gravity = Gravity.CENTER
             text = "Camera ready"
@@ -201,7 +236,7 @@ class MainActivity : ComponentActivity() {
         root.addView(controls)
 
         voiceStatusView = TextView(this).apply {
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             text = "Voice: local recording/import"
             setPadding(16, 4, 16, 4)
@@ -219,16 +254,96 @@ class MainActivity : ComponentActivity() {
         voiceControls.addView(importVoiceButton)
         voiceControls.addView(playVoiceButton)
         root.addView(voiceControls)
-        setContentView(root)
+
+        contentRoot = root
+        val frame = FrameLayout(this)
+        frame.addView(root, FrameLayout.LayoutParams(-1, -1))
+        privacyGate = buildPrivacyGate()
+        frame.addView(privacyGate, FrameLayout.LayoutParams(-1, -1))
+        setContentView(frame)
+    }
+
+    private fun buildPrivacyGate(): View {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(36, 48, 36, 48)
+            setBackgroundColor(Color.BLACK)
+        }
+        panel.addView(TextView(this).apply {
+            text = "Kémzy àvátâr"
+            setTextColor(Color.WHITE)
+            textSize = 30f
+            gravity = Gravity.CENTER
+        })
+        panel.addView(TextView(this).apply {
+            text = "Enter your passcode"
+            setTextColor(0xFFBDBDBD.toInt())
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setPadding(0, 14, 0, 18)
+        })
+        passcodeInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = "Passcode"
+            setSingleLine(true)
+            gravity = Gravity.CENTER
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF777777.toInt())
+        }
+        panel.addView(passcodeInput, LinearLayout.LayoutParams(-1, 58))
+        val unlock = Button(this).apply {
+            text = "Unlock"
+            setOnClickListener { attemptUnlock() }
+        }
+        panel.addView(unlock, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 16, 0, 8) })
+        passcodeStatus = TextView(this).apply {
+            setTextColor(0xFFE57373.toInt())
+            gravity = Gravity.CENTER
+            textSize = 14f
+        }
+        panel.addView(passcodeStatus)
+        passcodeInput.setOnEditorActionListener { _, _, _ -> attemptUnlock(); true }
+        return panel
+    }
+
+    private fun attemptUnlock() {
+        if (passcodeGate.verify(passcodeInput.text?.toString().orEmpty())) {
+            unlockedForCurrentVisit = true
+            passcodeInput.text?.clear()
+            passcodeStatus.text = ""
+            unlockForVisit()
+        } else {
+            passcodeInput.text?.clear()
+            passcodeStatus.text = "Incorrect passcode"
+        }
+    }
+
+    private fun lockForVisit() {
+        if (!::privacyGate.isInitialized) return
+        unlockedForCurrentVisit = false
+        privacyGate.visibility = View.VISIBLE
+        contentRoot.visibility = View.GONE
+        passcodeInput.requestFocus()
+    }
+
+    private fun unlockForVisit() {
+        unlockedForCurrentVisit = true
+        privacyGate.visibility = View.GONE
+        contentRoot.visibility = View.VISIBLE
+        updateControls()
     }
 
     private fun startSession() {
+        if (!unlockedForCurrentVisit) return
         if (!hasCameraPermission()) {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
             return
         }
         val reference = currentAvatarUri() ?: return
         if (!faceSwapEngine.isReady) {
+            autoStartAfterPreparation = true
             prepareAvatarEngine()
             return
         }
@@ -246,6 +361,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopSession() {
+        if (!unlockedForCurrentVisit) return
         startService(Intent(this, AvatarStreamingService::class.java).setAction(AvatarStreamingService.ACTION_STOP))
         liveSessionStore.clear()
         streamingReferenceLock.stopStreaming()
@@ -275,7 +391,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVoiceRecording() {
-        if (liveSessionStore.isActive) return
+        if (liveSessionStore.isActive || !unlockedForCurrentVisit) return
         if (!voiceSessionPolicy.select(VoiceSourceType.MICROPHONE) || !voiceSessionPolicy.beginStreaming()) return
         runCatching {
             voiceController.startRecordingAndRemember(voiceAssetStore.newRecordingFile())
@@ -288,6 +404,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateControls() {
+        if (!::startButton.isInitialized || !unlockedForCurrentVisit) return
         val running = liveSessionStore.isActive
         val recording = voiceController.isRecording
         val hasAvatar = currentAvatarUri() != null
