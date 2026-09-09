@@ -1,6 +1,5 @@
 package com.kemzy.liveavatar
 
-import android.Manifest
 import android.companion.virtual.VirtualDeviceManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -35,6 +34,9 @@ class VirtualCameraCapability(
         }
 
     companion object {
+        private const val CREATE_VIRTUAL_DEVICE_PERMISSION =
+            "android.permission.CREATE_VIRTUAL_DEVICE"
+
         fun probe(context: Context): VirtualCameraCapability {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
                 return VirtualCameraCapability(Build.VERSION.SDK_INT, false, false, false)
@@ -59,7 +61,7 @@ class VirtualCameraCapability(
 
             val permissionGranted = ContextCompat.checkSelfPermission(
                 context,
-                Manifest.permission.CREATE_VIRTUAL_DEVICE
+                CREATE_VIRTUAL_DEVICE_PERMISSION
             ) == PackageManager.PERMISSION_GRANTED
 
             return fromPlatformProbe(
