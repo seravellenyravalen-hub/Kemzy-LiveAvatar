@@ -11,13 +11,13 @@ class AvatarOverlayModelTest {
     }
 
     @Test
-    fun trackedFaceUsesFaceBoundsAndRotation() {
+    fun trackedFaceUsesNormalizedBoundsAndRotation() {
         val result = FaceTrackingResult(
             faceCount = 1,
-            centerX = 250f,
-            centerY = 400f,
-            width = 300f,
-            height = 360f,
+            centerX = 0.25f,
+            centerY = 0.40f,
+            width = 0.30f,
+            height = 0.36f,
             rollDegrees = 20f
         )
         val model = AvatarOverlayModel.from(result, 1000, 1000)
