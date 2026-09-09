@@ -53,7 +53,7 @@ class MainActivity : ComponentActivity() {
             faceSwapEngine.setAvatar(localUri)
             avatarPreview.setImageURI(Uri.parse(localUri))
             avatarPreview.visibility = View.VISIBLE
-            statusView.text = "Preparing exact source face…"
+            statusView.text = "Connecting to Deep-Live-Cam…"
             prepareAvatarEngine()
             updateControls()
         }.onFailure { statusView.text = "Avatar import failed" }
@@ -89,7 +89,7 @@ class MainActivity : ComponentActivity() {
         liveSessionStore = LiveSessionStore(applicationContext)
         voiceAssetStore = VoiceAssetStore(applicationContext)
         voiceController = LocalVoiceController(applicationContext)
-        faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
+        faceSwapEngine = RemoteDeepLiveFaceSwapEngine(applicationContext)
         buildUi()
         liveCameraController = LiveCameraController(
             context = applicationContext,
@@ -126,9 +126,9 @@ class MainActivity : ComponentActivity() {
             val state = faceSwapEngine.prepareAvatar()
             runOnUiThread {
                 statusView.text = when (state) {
-                    LiveFaceEngineState.Ready -> "Exact source face ready"
+                    LiveFaceEngineState.Ready -> "Deep-Live-Cam source face ready"
                     is LiveFaceEngineState.Fallback -> state.reason
-                    else -> "Preparing face model…"
+                    else -> "Connecting to Deep-Live-Cam…"
                 }
                 updateControls()
             }
@@ -231,7 +231,7 @@ class MainActivity : ComponentActivity() {
         liveSessionStore.markActive(reference)
         previewView.visibility = View.VISIBLE
         processedView.visibility = View.VISIBLE
-        statusView.text = "Starting live face swap…"
+        statusView.text = "Starting Deep-Live-Cam…"
         liveCameraController.start()
         updateControls()
     }
@@ -274,11 +274,12 @@ class MainActivity : ComponentActivity() {
         selectAvatarButton.isEnabled = !running
         startButton.isEnabled = hasCameraPermission() && hasAvatar && faceSwapEngine.isReady && !running
         stopButton.isEnabled = running
-        if (!running) {
+        if (!running && faceSwapEngine.state !is LiveFaceEngineState.Preparing) {
             statusView.text = when {
                 !hasCameraPermission() -> "Camera permission required"
                 !hasAvatar -> "Choose an avatar to begin"
-                else -> "Reference ready"
+                faceSwapEngine.state is LiveFaceEngineState.Fallback -> (faceSwapEngine.state as LiveFaceEngineState.Fallback).reason
+                else -> "Deep-Live-Cam source ready"
             }
         }
     }
