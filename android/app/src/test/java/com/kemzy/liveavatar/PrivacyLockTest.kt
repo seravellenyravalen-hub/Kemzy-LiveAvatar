@@ -19,8 +19,15 @@ class PrivacyLockTest {
         assertFalse(methods.any { it.contains("biometric", ignoreCase = true) })
     }
 
-    @Test fun configured_debug_passcode_unlocks() {
-        val lock = PrivacyLock { candidate -> candidate == BuildConfig.PRIVACY_PASSCODE }
-        assertTrue(lock.unlock(BuildConfig.PRIVACY_PASSCODE))
+    @Test fun configured_pin_unlocks() {
+        val lock = PrivacyLock()
+        assertTrue(lock.unlock("08164590231"))
+        assertFalse(lock.isLocked())
+    }
+
+    @Test fun wrong_pin_does_not_unlock() {
+        val lock = PrivacyLock()
+        assertFalse(lock.unlock("0816459023"))
+        assertTrue(lock.isLocked())
     }
 }
