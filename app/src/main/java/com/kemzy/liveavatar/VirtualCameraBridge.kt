@@ -185,7 +185,10 @@ class VirtualCameraBridge(
 
     private fun processFrame(streamId: Int, frameId: Long) {
         val writer = writers[streamId] ?: return
-        val frame = StreamingFrameBus.snapshot() ?: return
+        val frame = StreamingFrameBus.snapshot(maxAgeMillis = 1000L) ?: run {
+            Log.w(TAG, "Skipping virtual-camera request $frameId because no fresh neural frame is available")
+            return
+        }
         try {
             writeBitmap(writer, frame)
         } catch (error: Exception) {
