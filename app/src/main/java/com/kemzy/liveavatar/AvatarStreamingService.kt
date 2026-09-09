@@ -29,11 +29,13 @@ class AvatarStreamingService : LifecycleService() {
     private var cameraProvider: ProcessCameraProvider? = null
     private var lockedReference: String? = null
     private var retryCount = 0
+    private var virtualCameraBridge: VirtualCameraBridge? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
+        virtualCameraBridge = VirtualCameraBridge(this, mainExecutor)
         faceTracker = FaceTracker(
             onResult = { tracking, bitmap ->
                 if (bitmap != null) {
@@ -75,11 +77,6 @@ class AvatarStreamingService : LifecycleService() {
         if (lockedReference == null) lockedReference = reference
         if (lockedReference != reference) return START_STICKY
 
-        if (intent?.action == ACTION_ENABLE_BACKGROUND_CAMERA) {
-            bindCameraWithRetry()
-            return START_STICKY
-        }
-
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(
                 NOTIFICATION_ID,
@@ -90,11 +87,14 @@ class AvatarStreamingService : LifecycleService() {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
 
-        // ARM is deliberately started while the Activity is visible. The camera itself is
-        // not acquired until ACTION_ENABLE_BACKGROUND_CAMERA arrives after onStop().
         modelExecutor.execute {
             faceSwapEngine.setAvatar(reference)
             faceSwapEngine.prepareAvatar()
+        }
+
+        if (intent?.action == ACTION_ENABLE_BACKGROUND_CAMERA) {
+            bindCameraWithRetry()
+            virtualCameraBridge?.start()
         }
         return START_STICKY
     }
@@ -127,6 +127,7 @@ class AvatarStreamingService : LifecycleService() {
     }
 
     private fun stopStreaming() {
+        virtualCameraBridge?.stop()
         cameraProvider?.unbindAll()
         cameraProvider = null
         lockedReference = null
@@ -163,6 +164,7 @@ class AvatarStreamingService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        virtualCameraBridge?.stop()
         cameraProvider?.unbindAll()
         cameraProvider = null
         faceTracker.close()
