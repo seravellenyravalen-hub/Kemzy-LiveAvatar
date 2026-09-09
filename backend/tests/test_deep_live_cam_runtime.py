@@ -20,6 +20,7 @@ def test_runtime_processes_through_upstream_processor(tmp_path):
     modules = upstream / "modules"
     modules.mkdir(parents=True)
     (modules / "__init__.py").write_text("")
+    (modules / "globals.py").write_text("")
     (modules / "face_analyser.py").write_text(
         "def get_one_face(frame):\n    return {'source': True}\n"
     )
