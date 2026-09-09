@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         if (::liveSessionStore.isInitialized && liveSessionStore.isActive && !isFinishing) {
+            cameraController?.setLiveEnabled(false)
             cameraController?.pauseCamera()
             startBackgroundStreaming()
         }
@@ -259,6 +260,7 @@ class MainActivity : ComponentActivity() {
     private fun bindVisibleCamera() {
         if (!hasCameraPermission()) return
         cameraController?.bindCamera()
+        cameraController?.setLiveEnabled(liveSessionStore.isActive)
         previewView.visibility = View.VISIBLE
         if (!liveSessionStore.isActive) liveAvatarView.visibility = View.GONE
         statusView.text = if (liveSessionStore.isActive) "Live camera active" else "Camera ready"
@@ -279,6 +281,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         liveSessionStore.markActive(reference)
+        cameraController?.setLiveEnabled(true)
         liveAvatarView.visibility = View.VISIBLE
         videoView.visibility = View.GONE
         previewView.visibility = View.GONE
@@ -289,6 +292,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopSession() {
+        cameraController?.setLiveEnabled(false)
         cameraController?.stopRecording()
         stopService(Intent(this, AvatarStreamingService::class.java).setAction(AvatarStreamingService.ACTION_STOP))
         liveSessionStore.clear()
