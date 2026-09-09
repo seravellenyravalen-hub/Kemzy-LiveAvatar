@@ -5,6 +5,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.face.FaceLandmark
 
 class FaceTracker(
     private val onResult: (FaceTrackingResult, android.graphics.Bitmap?) -> Unit,
@@ -25,7 +26,6 @@ class FaceTracker(
             imageProxy.close()
             return
         }
-
         val bitmap = try {
             imageProxy.toBitmap()
         } catch (error: Exception) {
@@ -33,7 +33,6 @@ class FaceTracker(
             onError(error)
             return
         }
-
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         detector.process(image)
             .addOnSuccessListener { faces ->
@@ -44,6 +43,13 @@ class FaceTracker(
                     val bounds = face.boundingBox
                     val imageWidth = image.width.toFloat().coerceAtLeast(1f)
                     val imageHeight = image.height.toFloat().coerceAtLeast(1f)
+                    val points = listOfNotNull(
+                        face.getLandmark(FaceLandmark.LEFT_EYE)?.position,
+                        face.getLandmark(FaceLandmark.RIGHT_EYE)?.position,
+                        face.getLandmark(FaceLandmark.NOSE_BASE)?.position,
+                        face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position,
+                        face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position
+                    ).map { android.graphics.PointF(it.x, it.y) }
                     FaceTrackingResult(
                         faceCount = faces.size,
                         yawDegrees = face.headEulerAngleY,
@@ -55,7 +61,8 @@ class FaceTracker(
                         height = bounds.height() / imageHeight,
                         leftEyeOpenProbability = face.leftEyeOpenProbability,
                         rightEyeOpenProbability = face.rightEyeOpenProbability,
-                        smilingProbability = face.smilingProbability
+                        smilingProbability = face.smilingProbability,
+                        landmarks = points
                     )
                 }
                 onResult(result, bitmap)
@@ -67,7 +74,5 @@ class FaceTracker(
             .addOnCompleteListener { imageProxy.close() }
     }
 
-    fun close() {
-        detector.close()
-    }
+    fun close() = detector.close()
 }
