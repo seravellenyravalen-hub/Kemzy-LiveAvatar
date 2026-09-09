@@ -1,5 +1,7 @@
 package com.kemzy.liveavatar
 
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import androidx.camera.core.ImageProxy
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
@@ -7,7 +9,7 @@ import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 
 class FaceTracker(
-    private val onResult: (FaceTrackingResult, android.graphics.Bitmap?) -> Unit,
+    private val onResult: (FaceTrackingResult, Bitmap?) -> Unit,
     private val onError: (Exception) -> Unit
 ) {
     private val detector: FaceDetector = FaceDetection.getClient(
@@ -27,7 +29,8 @@ class FaceTracker(
         }
 
         val bitmap = try {
-            imageProxy.toBitmap()
+            val raw = imageProxy.toBitmap()
+            rotateToMlKitOrientation(raw, imageProxy.imageInfo.rotationDegrees)
         } catch (error: Exception) {
             imageProxy.close()
             onError(error)
@@ -65,6 +68,15 @@ class FaceTracker(
                 onError(it)
             }
             .addOnCompleteListener { imageProxy.close() }
+    }
+
+    private fun rotateToMlKitOrientation(source: Bitmap, degrees: Int): Bitmap {
+        val normalized = ((degrees % 360) + 360) % 360
+        if (normalized == 0) return source
+        val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
+        val rotated = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        if (rotated !== source) source.recycle()
+        return rotated
     }
 
     fun close() {
