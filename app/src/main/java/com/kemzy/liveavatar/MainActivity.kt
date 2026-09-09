@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -80,6 +81,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+
+        // Defense in depth: MainActivity is never usable without an in-memory unlock.
+        if (!(application as PrivacyApplication).unlocked) {
+            startActivity(Intent(this, PrivacyLockActivity::class.java))
+            finish()
+            return
+        }
+
         referenceImageStore = ReferenceImageStore(applicationContext)
         liveSessionStore = LiveSessionStore(applicationContext)
         voiceAssetStore = VoiceAssetStore(applicationContext)
@@ -299,7 +309,11 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     override fun onDestroy() {
-        // The foreground service, not the Activity, owns the live camera session.
+        // Backgrounding, switching to Camera, or opening another app does not lock.
+        // A finishing Activity indicates that the protected task is actually being closed.
+        if (isFinishing && !isChangingConfigurations) {
+            (application as PrivacyApplication).lock()
+        }
         faceSwapEngine.close()
         voiceController.close()
         super.onDestroy()
