@@ -8,12 +8,10 @@ data class FaceModelDescriptor(
 )
 
 /**
- * Runtime models used by Kemzy-LiveAvatar's Android adaptation of the
- * Deep-Live-Cam/InsightFace live-swap pipeline.
+ * Minimal on-device runtime for Kemzy-LiveAvatar.
  *
- * The ArcFace identity model extracts the exact identity embedding from the
- * selected source photo. INSwapper then transfers that identity to the live
- * target face. No generated avatar image is used in the inference path.
+ * INSwapper requires the ArcFace w600k_r50 identity model. The FP16 swapper
+ * is used to avoid the larger FP32 swapper; no enhancement model is downloaded.
  */
 object FaceModelManifest {
     val required = listOf(
@@ -25,9 +23,9 @@ object FaceModelManifest {
         ),
         FaceModelDescriptor(
             id = "face-swapper",
-            fileName = "inswapper_128.onnx",
+            fileName = "inswapper_128_fp16.onnx",
             required = true,
-            remoteUrl = "https://huggingface.co/leonelhs/insightface/resolve/main/inswapper_128.onnx"
+            remoteUrl = "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128_fp16.onnx"
         )
     )
 
