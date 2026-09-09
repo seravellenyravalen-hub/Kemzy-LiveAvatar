@@ -34,8 +34,6 @@ class OnDeviceFaceSwapEngine(
             return state
         }
 
-        // Deterministic test/fallback path: an explicitly supplied model inventory
-        // must be honored before requiring a real Android context or filesystem.
         if (!missingModelsOverride.isNullOrEmpty()) {
             state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
             return state
@@ -55,17 +53,33 @@ class OnDeviceFaceSwapEngine(
                 return state
             }
 
-            closeSessions()
-            val backend = InferenceBackendSelector.select(
-                apiLevel = Build.VERSION.SDK_INT,
-                nnapiAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1
-            )
             val factory = OnnxSessionFactory()
             val arcFace = FaceModelManifest.required.first { it.id == "arcface-embedder" }
             val swapper = FaceModelManifest.required.first { it.id == "face-swapper" }
             val emap = FaceModelManifest.required.first { it.id == "inswapper-emap" }
-            embedderSession = factory.create(store.fileFor(arcFace).absolutePath, backend)
-            swapperSession = factory.create(store.fileFor(swapper).absolutePath, backend)
+            var lastSessionError: Throwable? = null
+
+            for (backend in InferenceBackendSelector.candidates(
+                apiLevel = Build.VERSION.SDK_INT,
+                nnapiAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1
+            )) {
+                closeSessions()
+                try {
+                    embedderSession = factory.create(store.fileFor(arcFace).absolutePath, backend)
+                    swapperSession = factory.create(store.fileFor(swapper).absolutePath, backend)
+                    lastSessionError = null
+                    break
+                } catch (error: Throwable) {
+                    lastSessionError = error
+                    closeSessions()
+                }
+            }
+
+            if (embedderSession == null || swapperSession == null) {
+                val detail = lastSessionError?.message ?: "no compatible execution provider"
+                state = LiveFaceEngineState.Fallback("AI runtime could not load models: $detail")
+                return state
+            }
 
             val activeProcessor = NeuralFaceSwapProcessor(appContext)
             activeProcessor.attachSessions(embedderSession!!, swapperSession!!)
