@@ -57,7 +57,7 @@ class AvatarStreamingService : LifecycleService() {
                     }
                 }
             },
-            onError = { /* UI diagnostics are handled by MainActivity while foreground. */ }
+            onError = { /* MainActivity presents foreground diagnostics. */ }
         )
     }
 
@@ -78,14 +78,17 @@ class AvatarStreamingService : LifecycleService() {
 
         startForegroundWithCameraType()
 
+        if (action == ACTION_FOREGROUND) {
+            // Activity owns Preview + ImageAnalysis while visible. Do not initialize a
+            // second camera pipeline here; just release any background camera use case.
+            unbindCamera()
+            return START_STICKY
+        }
+
         modelExecutor.execute {
             faceSwapEngine.setAvatar(reference)
             faceSwapEngine.prepareAvatar()
-            if (action == ACTION_BACKGROUND && faceSwapEngine.isReady) {
-                bindCameraWithRetry()
-            } else if (action == ACTION_FOREGROUND) {
-                unbindCamera()
-            }
+            if (faceSwapEngine.isReady) bindCameraWithRetry()
         }
         return START_STICKY
     }
