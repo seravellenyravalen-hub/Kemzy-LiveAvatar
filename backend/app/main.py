@@ -1,25 +1,49 @@
+import logging
+from pathlib import Path
+
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 
-from .models import ModelRuntime, UnconfiguredModelRuntime
+from .config import settings
+from .deep_live_cam_runtime import DeepLiveCamRuntime
+from .models import ModelRuntime
 from .sessions import SessionStore
 
+logger = logging.getLogger(__name__)
 app = FastAPI(title="Kemzy Remote Live Backend", version="1.0.0")
-runtime: ModelRuntime = UnconfiguredModelRuntime()
+runtime: ModelRuntime = DeepLiveCamRuntime(
+    upstream_path=Path(settings.dlc_path),
+    models_path=Path(settings.model_dir),
+    execution_provider=settings.execution_provider,
+)
 sessions = SessionStore()
+_runtime_error: str | None = None
 
 
 @app.on_event("startup")
 def load_runtime() -> None:
-    runtime.load()
+    global _runtime_error
+    try:
+        runtime.load()
+        _runtime_error = None
+    except Exception as exc:
+        _runtime_error = str(exc)
+        logger.exception("Deep-Live-Cam runtime failed to initialize")
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "model_ready": runtime.ready}
+    return {
+        "status": "ok",
+        "model_ready": runtime.ready,
+        "inference_provider": settings.execution_provider,
+        "runtime_error": _runtime_error,
+    }
 
 
 @app.post("/v1/sessions")
 def create_session() -> dict[str, str]:
+    if not runtime.ready:
+        raise HTTPException(status_code=503, detail="inference runtime is not ready")
     try:
         session = sessions.create()
     except RuntimeError as exc:
@@ -49,8 +73,11 @@ async def upload_reference(
     data = await file.read()
     if not data or len(data) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="reference image is empty or too large")
+    try:
+        runtime.set_reference(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     session.reference = data
-    runtime.set_reference(data)
     return {"status": "ok", "model_ready": runtime.ready}
 
 
