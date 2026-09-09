@@ -39,24 +39,25 @@ class AvatarStreamingService : LifecycleService() {
         virtualCameraBridge = StockAndroidVirtualCameraBridge(applicationContext)
         faceTracker = FaceTracker(
             onResult = { tracking, bitmap ->
-                if (bitmap == null) return@FaceTracker
-                if (!modelFrameBusy.compareAndSet(false, true)) {
-                    bitmap.recycle()
-                    return@FaceTracker
-                }
-                modelExecutor.execute {
-                    try {
-                        if (faceSwapEngine.isReady && lockedReference != null) {
-                            val output = faceSwapEngine.processFrame(bitmap, tracking)
-                            // Never publish an unprocessed camera frame as the avatar.
-                            if (output.isNeural && output.bitmap != null) {
-                                StreamingFrameBus.publish(output.bitmap)
-                                virtualCameraBridge?.publishFrame(output.bitmap)
+                if (bitmap != null) {
+                    if (!modelFrameBusy.compareAndSet(false, true)) {
+                        bitmap.recycle()
+                    } else {
+                        modelExecutor.execute {
+                            try {
+                                if (faceSwapEngine.isReady && lockedReference != null) {
+                                    val output = faceSwapEngine.processFrame(bitmap, tracking)
+                                    // Never publish an unprocessed camera frame as the avatar.
+                                    if (output.isNeural && output.bitmap != null) {
+                                        StreamingFrameBus.publish(output.bitmap)
+                                        virtualCameraBridge?.publishFrame(output.bitmap)
+                                    }
+                                }
+                            } finally {
+                                bitmap.recycle()
+                                modelFrameBusy.set(false)
                             }
                         }
-                    } finally {
-                        bitmap.recycle()
-                        modelFrameBusy.set(false)
                     }
                 }
             },
