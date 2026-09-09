@@ -47,7 +47,10 @@ class LiveCameraController(
     val isRecording: Boolean get() = recording != null
 
     fun setAvatar(uri: String) {
-        faceSwapEngine.setAvatar(uri)
+        if (faceSwapEngine.avatarUri != uri) {
+            faceSwapEngine.clearAvatar()
+            faceSwapEngine.setAvatar(uri)
+        }
     }
 
     fun prepareAvatarAsync(onComplete: (LiveFaceEngineState) -> Unit) {
