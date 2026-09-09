@@ -7,6 +7,13 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <ImageView
+        android:id="@+id/processedPreview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter"
+        android:visibility="gone" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -32,6 +39,41 @@
             android:textColor="@android:color/white"
             android:textSize="13sp"
             android:paddingBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/sourceThumbnail"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_marginEnd="10dp"
+                android:scaleType="centerCrop"
+                android:contentDescription="Selected source face" />
+
+            <Button
+                android:id="@+id/selectSourceButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Select Source" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/startSwapButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Start Live Swap" />
+
+        <Button
+            android:id="@+id/stopSwapButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Stop Live Swap"
+            android:visibility="gone" />
 
         <Button
             android:id="@+id/backgroundLiveButton"
