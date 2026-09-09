@@ -36,22 +36,23 @@ class AvatarStreamingService : LifecycleService() {
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         faceTracker = FaceTracker(
             onResult = { tracking, bitmap ->
-                if (bitmap == null) return@onResult
-                if (!modelFrameBusy.compareAndSet(false, true)) {
-                    bitmap.recycle()
-                    return@onResult
-                }
-                modelExecutor.execute {
-                    try {
-                        if (faceSwapEngine.isReady) {
-                            val output = faceSwapEngine.processFrame(bitmap, tracking)
-                            if (output.isNeural && output.bitmap != null) {
-                                StreamingFrameBus.publish(output.bitmap)
+                if (bitmap != null) {
+                    if (!modelFrameBusy.compareAndSet(false, true)) {
+                        bitmap.recycle()
+                    } else {
+                        modelExecutor.execute {
+                            try {
+                                if (faceSwapEngine.isReady) {
+                                    val output = faceSwapEngine.processFrame(bitmap, tracking)
+                                    if (output.isNeural && output.bitmap != null) {
+                                        StreamingFrameBus.publish(output.bitmap)
+                                    }
+                                }
+                            } finally {
+                                bitmap.recycle()
+                                modelFrameBusy.set(false)
                             }
                         }
-                    } finally {
-                        bitmap.recycle()
-                        modelFrameBusy.set(false)
                     }
                 }
             },
