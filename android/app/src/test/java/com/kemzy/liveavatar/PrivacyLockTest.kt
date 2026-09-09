@@ -6,7 +6,7 @@ import org.junit.Test
 
 class PrivacyLockTest {
     @Test fun lock_is_required_after_session_end() {
-        val lock = PrivacyLock()
+        val lock = PrivacyLock { candidate -> candidate == "correct" }
         assertTrue(lock.isLocked())
         lock.unlock("correct")
         assertFalse(lock.isLocked())
