@@ -16,12 +16,9 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * Keeps the physical camera and live frame pipeline alive while another app is
- * in the foreground. It is intentionally a foreground camera service so the
- * user can see that camera access remains active.
- *
- * This is the processing/output host. Publishing a system-wide virtual camera
- * is a separate OS/OEM capability and is never faked here.
+ * Keeps the physical camera and real model pipeline alive while another app is
+ * in the foreground. The foreground service does not claim to be a system
+ * virtual camera; publishing to other apps requires an OS/OEM camera provider.
  */
 class LiveCameraService : LifecycleService() {
     companion object {
@@ -37,9 +34,12 @@ class LiveCameraService : LifecycleService() {
 
     private val pipeline = FramePipeline(capacity = 1)
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private lateinit var sourceRepository: SourceFaceRepository
+    private var runtime: OnDeviceSwapRuntime? = null
 
     override fun onCreate() {
         super.onCreate()
+        sourceRepository = SourceFaceRepository(this)
         createNotificationChannel()
     }
 
@@ -53,20 +53,23 @@ class LiveCameraService : LifecycleService() {
 
     private fun startLive() {
         if (active) return
+        val bundle = ModelBundleRepository(ModelRepository(this)).inspect()
+        if (!bundle.isComplete || !sourceRepository.hasSource()) {
+            android.util.Log.e("KemzyLive", "Background Live Swap requires source image and complete model bundle")
+            stopSelf()
+            return
+        }
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Kemzy-LiveAvatar")
-            .setContentText("Kemzy camera processing is active")
+            .setContentText("Live face processing is active")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 
-        startForeground(
-            NOTIFICATION_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-        )
+        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        runtime = OnDeviceSwapRuntime(bundle)
         active = true
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -80,21 +83,20 @@ class LiveCameraService : LifecycleService() {
                     .also { useCase ->
                         useCase.setAnalyzer(
                             cameraExecutor,
-                            LiveFrameAnalyzer(
-                                pipeline = pipeline,
+                            LiveSwapAnalyzer(
+                                runtime = requireNotNull(runtime),
+                                sourceProvider = { sourceRepository.loadSource() },
+                                onProcessed = { bitmap ->
+                                    pipeline.offer(Frame(System.nanoTime(), bitmap))
+                                },
                                 onFrameError = { error ->
-                                    android.util.Log.e("KemzyLive", "Camera frame failed", error)
+                                    android.util.Log.e("KemzyLive", "Model frame failed", error)
                                 }
                             )
                         )
                     }
-
                 provider.unbindAll()
-                provider.bindToLifecycle(
-                    this,
-                    CameraSelector.DEFAULT_FRONT_CAMERA,
-                    analysis
-                )
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
             }.onFailure {
                 android.util.Log.e("KemzyLive", "Unable to start background camera", it)
                 stopLive()
@@ -105,6 +107,8 @@ class LiveCameraService : LifecycleService() {
     private fun stopLive() {
         active = false
         pipeline.clear()
+        runtime?.close()
+        runtime = null
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -113,6 +117,8 @@ class LiveCameraService : LifecycleService() {
     override fun onDestroy() {
         active = false
         pipeline.clear()
+        runtime?.close()
+        runtime = null
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
         cameraExecutor.shutdownNow()
         super.onDestroy()
@@ -123,11 +129,7 @@ class LiveCameraService : LifecycleService() {
     private fun createNotificationChannel() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Kemzy live camera",
-                NotificationManager.IMPORTANCE_LOW
-            )
+            NotificationChannel(CHANNEL_ID, "Kemzy live camera", NotificationManager.IMPORTANCE_LOW)
         )
     }
 }
