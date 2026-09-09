@@ -104,15 +104,17 @@ class OnDeviceFaceSwapEngine(
         }
     }
 
-    override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame =
-        FaceSwapFrame.fallback(
-            when (state) {
+    override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame {
+        val currentState = state
+        return FaceSwapFrame.fallback(
+            when (currentState) {
                 LiveFaceEngineState.Ready -> "AI runtime loaded; camera frame required for neural output"
-                is LiveFaceEngineState.Fallback -> state.reason
+                is LiveFaceEngineState.Fallback -> currentState.reason
                 LiveFaceEngineState.Preparing -> "AI models are preparing"
                 LiveFaceEngineState.Idle -> "AI engine is idle"
             }
         )
+    }
 
     override fun processFrame(frame: Bitmap, tracking: FaceTrackingResult): FaceSwapFrame {
         if (state !is LiveFaceEngineState.Ready) return processFrame(tracking)
