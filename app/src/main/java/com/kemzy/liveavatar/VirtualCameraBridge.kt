@@ -67,8 +67,7 @@ class VirtualCameraBridge(
     private fun associateAndCreate() {
         val cdm = service.getSystemService(CompanionDeviceManager::class.java)
         val existing = cdm?.myAssociations?.firstOrNull {
-            it.packageName == service.applicationContext.packageName &&
-                it.displayName?.toString() == CAMERA_NAME
+            it.displayName?.toString() == CAMERA_NAME
         }
         if (existing != null) {
             createVirtualDevice(existing)
