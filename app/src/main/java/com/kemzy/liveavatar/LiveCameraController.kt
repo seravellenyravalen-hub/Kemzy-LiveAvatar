@@ -91,6 +91,13 @@ class LiveCameraController(
         }, ContextCompat.getMainExecutor(context))
     }
 
+    fun pauseCamera() {
+        recording?.close()
+        recording = null
+        cameraProvider?.unbindAll()
+        videoCapture = null
+    }
+
     fun startRecording() {
         val capture = videoCapture ?: run {
             onError("Camera recording is not ready")
