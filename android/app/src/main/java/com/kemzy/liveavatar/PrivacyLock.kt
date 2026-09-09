@@ -1,15 +1,17 @@
 package com.kemzy.liveavatar
 
-/** Session lock. The real passcode must be supplied by the app owner at configuration time. */
-class PrivacyLock {
+/** Session lock. Credential material is supplied by configuration, never hardcoded here. */
+class PrivacyLock(
+    private val verifier: (String) -> Boolean = { candidate ->
+        candidate == BuildConfig.PRIVACY_PASSCODE
+    }
+) {
     private var unlocked = false
 
     fun isLocked(): Boolean = !unlocked
 
     fun unlock(candidate: String): Boolean {
-        // Deliberately keep credential material out of source control.
-        val configured = BuildConfig.PRIVACY_PASSCODE
-        if (candidate == configured) unlocked = true
+        if (verifier(candidate)) unlocked = true
         return unlocked
     }
 
