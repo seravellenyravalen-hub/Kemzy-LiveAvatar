@@ -17,11 +17,7 @@ class ModelDownloader(context: Context) {
         }
     }
 
-    private fun download(
-        model: FaceModelDescriptor,
-        url: String,
-        onProgress: (String, Int) -> Unit
-    ) {
+    private fun download(model: FaceModelDescriptor, url: String, onProgress: (String, Int) -> Unit) {
         val destination = store.fileFor(model)
         val temp = File(destination.parentFile, "${destination.name}.part")
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -31,12 +27,9 @@ class ModelDownloader(context: Context) {
             requestMethod = "GET"
             setRequestProperty("User-Agent", "Kemzy-LiveAvatar/0.1")
         }
-
         try {
             connection.connect()
-            check(connection.responseCode in 200..299) {
-                "Model download failed: HTTP ${connection.responseCode}"
-            }
+            check(connection.responseCode in 200..299) { "Model download failed: HTTP ${connection.responseCode}" }
             val total = connection.contentLengthLong
             connection.inputStream.use { input ->
                 temp.outputStream().use { output ->
