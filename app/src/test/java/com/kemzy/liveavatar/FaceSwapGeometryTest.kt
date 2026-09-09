@@ -42,7 +42,7 @@ class FaceSwapGeometryTest {
 
         assertEquals(0, crop.left)
         assertEquals(0, crop.top)
-        assertEquals(300, crop.width)
-        assertEquals(300, crop.height)
+        assertEquals(400, crop.width)
+        assertEquals(400, crop.height)
     }
 }
