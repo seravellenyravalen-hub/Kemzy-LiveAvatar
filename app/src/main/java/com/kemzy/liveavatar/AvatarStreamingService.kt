@@ -18,7 +18,7 @@ import androidx.lifecycle.LifecycleService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Owns the camera session after the Activity leaves the foreground. */
+/** Keeps the camera/AI pipeline alive only while the app is backgrounded. */
 class AvatarStreamingService : LifecycleService() {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val modelExecutor = Executors.newSingleThreadExecutor()
@@ -36,45 +36,61 @@ class AvatarStreamingService : LifecycleService() {
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         faceTracker = FaceTracker(
             onResult = { tracking, bitmap ->
-                if (bitmap != null) {
-                    if (!modelFrameBusy.compareAndSet(false, true)) {
-                        bitmap.recycle()
-                    } else {
-                        modelExecutor.execute {
-                            try {
-                                if (faceSwapEngine.isReady) {
-                                    val output = faceSwapEngine.processFrame(bitmap, tracking)
-                                    if (output.isNeural && output.bitmap != null) {
-                                        StreamingFrameBus.publish(output.bitmap)
-                                    }
-                                }
-                            } finally {
-                                bitmap.recycle()
-                                modelFrameBusy.set(false)
-                            }
+                if (bitmap == null) return@FaceTracker
+                if (!faceSwapEngine.isReady) {
+                    bitmap.recycle()
+                    return@FaceTracker
+                }
+                if (!modelFrameBusy.compareAndSet(false, true)) {
+                    bitmap.recycle()
+                    return@FaceTracker
+                }
+                modelExecutor.execute {
+                    try {
+                        val output = faceSwapEngine.processFrame(bitmap, tracking)
+                        if (output.isNeural && output.bitmap != null) {
+                            StreamingFrameBus.publish(output.bitmap)
                         }
+                    } finally {
+                        bitmap.recycle()
+                        modelFrameBusy.set(false)
                     }
                 }
             },
-            onError = { /* Keep diagnostics internal; never mutate the locked reference. */ }
+            onError = { /* UI diagnostics are handled by MainActivity while foreground. */ }
         )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
+        val action = intent?.action
+        if (action == ACTION_STOP) {
             stopStreaming()
             return START_NOT_STICKY
         }
 
-        val reference = intent?.getStringExtra(EXTRA_REFERENCE)
+        val reference = intent?.getStringExtra(EXTRA_REFERENCE) ?: lockedReference
         if (reference.isNullOrBlank()) {
             stopSelf()
             return START_NOT_STICKY
         }
-
         if (lockedReference == null) lockedReference = reference
         if (lockedReference != reference) return START_STICKY
 
+        startForegroundWithCameraType()
+
+        modelExecutor.execute {
+            faceSwapEngine.setAvatar(reference)
+            faceSwapEngine.prepareAvatar()
+            if (action == ACTION_BACKGROUND && faceSwapEngine.isReady) {
+                bindCameraWithRetry()
+            } else if (action == ACTION_FOREGROUND) {
+                unbindCamera()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun startForegroundWithCameraType() {
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(
                 NOTIFICATION_ID,
@@ -84,13 +100,6 @@ class AvatarStreamingService : LifecycleService() {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
-
-        modelExecutor.execute {
-            faceSwapEngine.setAvatar(reference)
-            faceSwapEngine.prepareAvatar()
-            if (faceSwapEngine.isReady) bindCameraWithRetry()
-        }
-        return START_STICKY
     }
 
     private fun bindCameraWithRetry() {
@@ -103,7 +112,9 @@ class AvatarStreamingService : LifecycleService() {
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
-                    .also { useCase -> useCase.setAnalyzer(analysisExecutor) { image -> faceTracker.process(image) } }
+                    .also { useCase ->
+                        useCase.setAnalyzer(analysisExecutor) { image -> faceTracker.process(image) }
+                    }
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, analysis)
                 retryCount = 0
@@ -120,9 +131,14 @@ class AvatarStreamingService : LifecycleService() {
         mainHandler.postDelayed({ bindCameraWithRetry() }, delay)
     }
 
-    private fun stopStreaming() {
+    private fun unbindCamera() {
         cameraProvider?.unbindAll()
         cameraProvider = null
+        retryCount = 0
+    }
+
+    private fun stopStreaming() {
+        unbindCamera()
         lockedReference = null
         StreamingFrameBus.clear()
         faceSwapEngine.clearAvatar()
@@ -151,16 +167,13 @@ class AvatarStreamingService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Swiping the protected app task away is an actual stop. Ordinary Home/Camera/app
-        // switching does not call this callback, so the live foreground service can continue.
         (application as PrivacyApplication).lock()
         stopStreaming()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        cameraProvider?.unbindAll()
-        cameraProvider = null
+        unbindCamera()
         faceTracker.close()
         faceSwapEngine.close()
         StreamingFrameBus.clear()
@@ -172,6 +185,8 @@ class AvatarStreamingService : LifecycleService() {
 
     companion object {
         const val ACTION_STOP = "com.kemzy.liveavatar.action.STOP"
+        const val ACTION_FOREGROUND = "com.kemzy.liveavatar.action.FOREGROUND"
+        const val ACTION_BACKGROUND = "com.kemzy.liveavatar.action.BACKGROUND"
         const val EXTRA_REFERENCE = "com.kemzy.liveavatar.extra.REFERENCE"
         private const val CHANNEL_ID = "kemzy_live_avatar"
         private const val NOTIFICATION_ID = 9001
