@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Kemzy-LiveAvatar</string>
+    <string name="app_name">Kémzy àvátâr</string>
+    <string name="live_avatar_channel">Kémzy àvátâr</string>
+    <string name="live_avatar_notification">Live avatar camera is active</string>
 </resources>
