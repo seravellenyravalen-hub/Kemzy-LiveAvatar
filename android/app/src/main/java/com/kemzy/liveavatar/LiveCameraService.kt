@@ -1,9 +1,11 @@
 package com.kemzy.liveavatar
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.camera.core.CameraSelector
@@ -16,9 +18,9 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * Keeps the physical camera and real model pipeline alive while another app is
- * in the foreground. The foreground service does not claim to be a system
- * virtual camera; publishing to other apps requires an OS/OEM camera provider.
+ * Keeps the physical camera and Kemzy-owned microphone processing alive while
+ * another app is in the foreground. Android still decides whether a processed
+ * camera/audio stream can be exposed to that other app.
  */
 class LiveCameraService : LifecycleService() {
     companion object {
@@ -36,6 +38,7 @@ class LiveCameraService : LifecycleService() {
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var sourceRepository: SourceFaceRepository
     private var runtime: OnDeviceSwapRuntime? = null
+    private var voiceCapture: VoiceCaptureController? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -59,17 +62,37 @@ class LiveCameraService : LifecycleService() {
             stopSelf()
             return
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            android.util.Log.e("KemzyLive", "Camera and microphone permissions are required")
+            stopSelf()
+            return
+        }
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Kemzy-LiveAvatar")
-            .setContentText("Live face processing is active")
+            .setContentText("Live face and voice processing is active")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        startForeground(
+            NOTIFICATION_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        )
         runtime = OnDeviceSwapRuntime(bundle)
+        voiceCapture = VoiceCaptureController(this).also { capture ->
+            capture.setMode(VoiceEffectProcessor.Mode.NATURAL)
+            capture.start { processed ->
+                // Keep the processed PCM in the Kemzy pipeline. A third-party
+                // call app can consume it only when Android/OEM exposes a
+                // supported virtual microphone route.
+                VoiceOutputBuffer.offer(processed)
+            }
+        }
         active = true
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -86,12 +109,8 @@ class LiveCameraService : LifecycleService() {
                             LiveSwapAnalyzer(
                                 runtime = requireNotNull(runtime),
                                 sourceProvider = { sourceRepository.loadSource() },
-                                onProcessed = { bitmap ->
-                                    pipeline.offer(Frame(System.nanoTime(), bitmap))
-                                },
-                                onFrameError = { error ->
-                                    android.util.Log.e("KemzyLive", "Model frame failed", error)
-                                }
+                                onProcessed = { bitmap -> pipeline.offer(Frame(System.nanoTime(), bitmap)) },
+                                onFrameError = { error -> android.util.Log.e("KemzyLive", "Model frame failed", error) }
                             )
                         )
                     }
@@ -107,6 +126,8 @@ class LiveCameraService : LifecycleService() {
     private fun stopLive() {
         active = false
         pipeline.clear()
+        voiceCapture?.close()
+        voiceCapture = null
         runtime?.close()
         runtime = null
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
@@ -117,6 +138,8 @@ class LiveCameraService : LifecycleService() {
     override fun onDestroy() {
         active = false
         pipeline.clear()
+        voiceCapture?.close()
+        voiceCapture = null
         runtime?.close()
         runtime = null
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
@@ -132,4 +155,19 @@ class LiveCameraService : LifecycleService() {
             NotificationChannel(CHANNEL_ID, "Kemzy live camera", NotificationManager.IMPORTANCE_LOW)
         )
     }
+}
+
+object VoiceOutputBuffer {
+    private const val MAX_FRAMES = 8
+    private val queue = java.util.concurrent.ArrayBlockingQueue<ShortArray>(MAX_FRAMES)
+
+    fun offer(frame: ShortArray) {
+        if (!queue.offer(frame)) {
+            queue.poll()
+            queue.offer(frame)
+        }
+    }
+
+    fun poll(): ShortArray? = queue.poll()
+    fun clear() = queue.clear()
 }
