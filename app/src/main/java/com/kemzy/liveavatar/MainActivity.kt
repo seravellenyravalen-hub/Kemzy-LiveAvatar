@@ -64,7 +64,7 @@ class MainActivity : ComponentActivity() {
         runCatching {
             currentVoiceFile = voiceAssetStore.import(uri)
             voiceStatusView.text = "Voice imported locally"
-            playVoiceButton.isEnabled = true
+            playVoiceButton.setEnabled(true)
         }.onFailure { voiceStatusView.text = "Voice import unavailable" }
     }
 
@@ -188,14 +188,14 @@ class MainActivity : ComponentActivity() {
 
         startButton = Button(this).apply {
             text = "Start live"
-            isEnabled = false
+            setEnabled(false)
             setOnClickListener { startSession() }
         }
         root.addView(startButton, LinearLayout.LayoutParams(-1, -2).apply { setMargins(16, 4, 16, 4) })
 
         stopButton = Button(this).apply {
             text = "Stop"
-            isEnabled = false
+            setEnabled(false)
             setOnClickListener { stopSession() }
         }
         root.addView(stopButton, LinearLayout.LayoutParams(-1, -2).apply { setMargins(16, 4, 16, 4) })
@@ -211,7 +211,7 @@ class MainActivity : ComponentActivity() {
             text = "Record voice"
             setOnClickListener {
                 if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    startVoiceRecording()
+                    if (voiceController.isRecording) stopVoiceRecording() else startVoiceRecording()
                 } else requestMicrophonePermission.launch(Manifest.permission.RECORD_AUDIO)
             }
         }
@@ -219,7 +219,7 @@ class MainActivity : ComponentActivity() {
 
         playVoiceButton = Button(this).apply {
             text = "Play voice"
-            isEnabled = false
+            setEnabled(false)
             setOnClickListener { currentVoiceFile?.let { voiceController.play(it) } }
         }
         root.addView(playVoiceButton, LinearLayout.LayoutParams(-1, -2).apply { setMargins(16, 2, 16, 10) })
@@ -240,8 +240,8 @@ class MainActivity : ComponentActivity() {
         liveSessionStore.isActive = true
         processedView.visibility = View.VISIBLE
         liveCameraController.start()
-        startButton.isEnabled = false
-        stopButton.isEnabled = true
+        startButton.setEnabled(false)
+        stopButton.setEnabled(true)
         statusView.text = "Live face swap running"
     }
 
@@ -249,7 +249,7 @@ class MainActivity : ComponentActivity() {
         liveCameraController.stop()
         liveSessionStore.isActive = false
         processedView.visibility = View.GONE
-        stopButton.isEnabled = false
+        stopButton.setEnabled(false)
         updateControls()
         statusView.text = "Live stopped"
     }
@@ -257,13 +257,24 @@ class MainActivity : ComponentActivity() {
     private fun updateControls() {
         val ready = faceSwapEngine.state is LiveFaceEngineState.Ready
         val active = liveSessionStore.isActive
-        startButton.isEnabled = hasCameraPermission() && ready && !active
-        stopButton.isEnabled = active
+        startButton.setEnabled(hasCameraPermission() && ready && !active)
+        stopButton.setEnabled(active)
     }
 
     private fun startVoiceRecording() {
-        currentVoiceFile = voiceController.startRecording()
-        voiceStatusView.text = "Voice recording started — tap Record voice again to stop"
+        val output = voiceAssetStore.newRecordingFile()
+        voiceController.startRecording(output)
+        currentVoiceFile = output
+        recordVoiceButton.text = "Stop voice"
+        playVoiceButton.setEnabled(false)
+        voiceStatusView.text = "Voice recording started — tap Stop voice to finish"
+    }
+
+    private fun stopVoiceRecording() {
+        currentVoiceFile = voiceController.stopRecording() ?: currentVoiceFile
+        recordVoiceButton.text = "Record voice"
+        playVoiceButton.setEnabled(currentVoiceFile != null)
+        voiceStatusView.text = if (currentVoiceFile != null) "Voice recording ready" else "Voice recording failed"
     }
 
     private fun hasCameraPermission(): Boolean =
@@ -284,8 +295,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (::liveCameraController.isInitialized) liveCameraController.stop()
+        if (voiceController.isRecording) voiceController.stopRecording()
         currentProcessedBitmap?.recycle()
         faceSwapEngine.close()
+        voiceController.close()
         super.onDestroy()
     }
 }
