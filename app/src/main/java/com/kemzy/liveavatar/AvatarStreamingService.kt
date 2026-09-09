@@ -35,15 +35,15 @@ class AvatarStreamingService : LifecycleService() {
         createNotificationChannel()
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
         faceTracker = FaceTracker(
-            onResult = { tracking, bitmap ->
-                if (bitmap == null) return@FaceTracker
+            onResult = onFrame@{ tracking, bitmap ->
+                if (bitmap == null) return@onFrame
                 if (!faceSwapEngine.isReady) {
                     bitmap.recycle()
-                    return@FaceTracker
+                    return@onFrame
                 }
                 if (!modelFrameBusy.compareAndSet(false, true)) {
                     bitmap.recycle()
-                    return@FaceTracker
+                    return@onFrame
                 }
                 modelExecutor.execute {
                     try {
