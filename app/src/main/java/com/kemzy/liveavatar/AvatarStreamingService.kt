@@ -150,6 +150,14 @@ class AvatarStreamingService : LifecycleService() {
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping the protected app task away is an actual stop. Ordinary Home/Camera/app
+        // switching does not call this callback, so the live foreground service can continue.
+        (application as PrivacyApplication).lock()
+        stopStreaming()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         cameraProvider?.unbindAll()
         cameraProvider = null
