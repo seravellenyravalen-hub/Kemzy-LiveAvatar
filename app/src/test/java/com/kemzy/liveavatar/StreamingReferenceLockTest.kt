@@ -9,7 +9,6 @@ class StreamingReferenceLockTest {
     @Test
     fun referenceCanChangeBeforeStreamingStarts() {
         val lock = StreamingReferenceLock()
-
         assertTrue(lock.select("avatar-a"))
         assertTrue(lock.select("avatar-b"))
         assertEquals("avatar-b", lock.selected)
@@ -19,7 +18,6 @@ class StreamingReferenceLockTest {
     fun referenceCannotChangeOnceStreamingStarts() {
         val lock = StreamingReferenceLock()
         lock.select("avatar-a")
-
         assertTrue(lock.beginStreaming())
         assertFalse(lock.select("avatar-b"))
         assertEquals("avatar-a", lock.selected)
@@ -30,9 +28,7 @@ class StreamingReferenceLockTest {
         val lock = StreamingReferenceLock()
         lock.select("avatar-a")
         lock.beginStreaming()
-
         lock.stopStreaming()
-
         assertTrue(lock.select("avatar-b"))
         assertEquals("avatar-b", lock.selected)
     }
@@ -42,10 +38,8 @@ class StreamingReferenceLockTest {
         val lock = StreamingReferenceLock()
         lock.select("avatar-a")
         lock.beginStreaming()
-
         lock.onNetworkChanged()
         lock.onNetworkChanged()
-
         assertEquals("avatar-a", lock.selected)
         assertTrue(lock.isStreaming)
     }
