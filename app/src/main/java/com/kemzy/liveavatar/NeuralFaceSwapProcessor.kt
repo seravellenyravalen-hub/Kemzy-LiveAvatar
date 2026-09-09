@@ -3,19 +3,28 @@ package com.kemzy.liveavatar
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Matrix
+import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.net.Uri
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetector
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import kotlin.math.max
 
 /**
  * Executes the local ArcFace -> EMAP -> INSwapper path.
- * The source image is kept unchanged; only a square face crop is prepared for inference.
+ * The source image is prepared once; every camera frame is then swapped using
+ * the current tracked face geometry and expression, including eye/mouth motion.
  */
 class NeuralFaceSwapProcessor(
     private val context: Context,
@@ -41,7 +50,7 @@ class NeuralFaceSwapProcessor(
         }
 
         return try {
-            val sourceFace = squareCrop(source)
+            val sourceFace = detectAndCropSourceFace(source)
             val embedding = runArcFace(sourceFace)
             val emap = loadEMap(emapFile, embedding.size, 512)
             sourceLatent = FaceEmbeddingProjector.projectAndNormalize(embedding, emap, 512)
@@ -57,18 +66,19 @@ class NeuralFaceSwapProcessor(
 
     fun process(frame: Bitmap, tracking: FaceTrackingResult): Bitmap? {
         val latent = sourceLatent ?: return null
-        val embedderSession = embedder ?: return null
         val swapperSession = swapper ?: return null
         if (tracking.faceCount <= 0) return null
 
-        val crop = FaceSwapGeometry.targetCrop(tracking, frame.width, frame.height)
+        val crop = FaceSwapGeometry.targetCrop(tracking, frame.width, frame.height, margin = 0.25f)
         val target = Bitmap.createBitmap(frame, crop.left, crop.top, crop.width, crop.height)
         val target128 = Bitmap.createScaledBitmap(target, 128, 128, true)
         return try {
+            // INSwapper receives the current camera face, so its mouth/eyes/expression
+            // are driven by the user's live movement rather than by the static reference.
             val swapped = runSwapper(swapperSession, target128, latent)
             val resized = Bitmap.createScaledBitmap(swapped, crop.width, crop.height, true)
             val output = frame.copy(Bitmap.Config.ARGB_8888, true)
-            Canvas(output).drawBitmap(resized, crop.left.toFloat(), crop.top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
+            blendFace(output, resized, crop.left, crop.top)
             swapped.recycle()
             resized.recycle()
             output
@@ -80,6 +90,60 @@ class NeuralFaceSwapProcessor(
 
     fun clear() {
         sourceLatent = null
+    }
+
+    private fun detectAndCropSourceFace(source: Bitmap): Bitmap {
+        val detector = FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                .build()
+        return try {
+            val image = InputImage.fromBitmap(source, 0)
+            val faces = Tasks.await(detector.process(image))
+            val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                ?: return squareCrop(source)
+
+            val bounds = face.boundingBox
+            val faceWidth = bounds.width().coerceAtLeast(1)
+            val faceHeight = bounds.height().coerceAtLeast(1)
+            val side = (max(faceWidth, faceHeight) * 1.55f)
+                .toInt()
+                .coerceIn(1, minOf(source.width, source.height))
+            val centerX = bounds.exactCenterX()
+            val centerY = bounds.exactCenterY()
+            val left = (centerX - side / 2f).toInt().coerceIn(0, source.width - side)
+            val top = (centerY - side / 2f).toInt().coerceIn(0, source.height - side)
+            Bitmap.createBitmap(source, left, top, side, side)
+        } finally {
+            detector.close()
+        }
+    }
+
+    private fun blendFace(output: Bitmap, swapped: Bitmap, left: Int, top: Int) {
+        val canvas = Canvas(output)
+        val mask = Bitmap.createBitmap(swapped.width, swapped.height, Bitmap.Config.ALPHA_8)
+        val maskCanvas = Canvas(mask)
+        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        maskPaint.color = Color.WHITE
+        maskCanvas.drawOval(
+            swapped.width * 0.10f,
+            swapped.height * 0.07f,
+            swapped.width * 0.90f,
+            swapped.height * 0.96f,
+            maskPaint
+        )
+
+        canvas.saveLayer(left.toFloat(), top.toFloat(),
+            (left + swapped.width).toFloat(), (top + swapped.height).toFloat(), null)
+        canvas.drawBitmap(swapped, left.toFloat(), top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
+        val maskPaintOnCanvas = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.DST_IN)
+        }
+        canvas.drawBitmap(mask, left.toFloat(), top.toFloat(), maskPaintOnCanvas)
+        maskPaintOnCanvas.xfermode = null
+        canvas.restore()
+        mask.recycle()
     }
 
     private fun runArcFace(face: Bitmap): FloatArray {
@@ -123,7 +187,7 @@ class NeuralFaceSwapProcessor(
             val r = (values[i].coerceIn(0f, 1f) * 255f).toInt()
             val g = (values[plane + i].coerceIn(0f, 1f) * 255f).toInt()
             val b = (values[plane * 2 + i].coerceIn(0f, 1f) * 255f).toInt()
-            pixels[i] = android.graphics.Color.rgb(r, g, b)
+            pixels[i] = Color.rgb(r, g, b)
         }
         bitmap.setPixels(pixels, 0, 128, 0, 0, 128, 128)
         return bitmap
@@ -138,9 +202,9 @@ class NeuralFaceSwapProcessor(
         val rgb = FloatArray(argb.size * 3)
         for (i in argb.indices) {
             val pixel = argb[i]
-            rgb[i * 3] = android.graphics.Color.red(pixel).toFloat()
-            rgb[i * 3 + 1] = android.graphics.Color.green(pixel).toFloat()
-            rgb[i * 3 + 2] = android.graphics.Color.blue(pixel).toFloat()
+            rgb[i * 3] = Color.red(pixel).toFloat()
+            rgb[i * 3 + 1] = Color.green(pixel).toFloat()
+            rgb[i * 3 + 2] = Color.blue(pixel).toFloat()
         }
         return rgb
     }
