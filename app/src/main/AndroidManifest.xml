@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -27,6 +28,9 @@
         </activity>
         <activity
             android:name=".MainActivity"
+            android:exported="false" />
+        <activity
+            android:name=".CameraSettingsActivity"
             android:exported="false" />
 
         <service
