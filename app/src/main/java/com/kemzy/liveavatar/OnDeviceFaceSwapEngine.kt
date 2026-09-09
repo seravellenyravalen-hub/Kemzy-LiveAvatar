@@ -36,31 +36,22 @@ class OnDeviceFaceSwapEngine(
             return state
         }
 
-        val missing = missingModelsOverride ?: run {
-            val appContext = context
-                ?: return LiveFaceEngineState.Fallback("Android context is required")
-            val store = ModelStore(appContext)
-            buildList {
-                addAll(store.missingRequiredModels().map { it.id })
-                if (!store.isPresent(FaceModelManifest.optional.first { it.id == "inswapper-emap" })) {
-                    add("inswapper-emap")
-                }
-            }
-        }
-
-        if (missing.isNotEmpty()) {
-            state = LiveFaceEngineState.Fallback("Missing models: ${missing.joinToString(", ")}")
-            return state
-        }
-
         val appContext = context
-        if (appContext == null) {
-            state = LiveFaceEngineState.Ready
-            return state
-        }
+            ?: run {
+                state = LiveFaceEngineState.Fallback("Android context is required")
+                return state
+            }
 
         return try {
             val store = ModelStore(appContext)
+            ensureRequiredModels(appContext, store)
+
+            val missing = missingModelsOverride ?: store.missingRequiredModels().map { it.id }
+            if (missing.isNotEmpty()) {
+                state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
+                return state
+            }
+
             val backend = InferenceBackendSelector.select(
                 apiLevel = Build.VERSION.SDK_INT,
                 nnapiAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1
@@ -79,13 +70,10 @@ class OnDeviceFaceSwapEngine(
             activeProcessor.attachSessions(embedderSession!!, swapperSession!!)
             val error = activeProcessor.prepareAvatar(
                 avatarUri!!,
-                store.fileFor(FaceModelManifest.optional.first { it.id == "inswapper-emap" })
+                store.fileFor(FaceModelManifest.required.first { it.id == "inswapper-emap" })
             )
             if (error != null) {
-                embedderSession?.close()
-                swapperSession?.close()
-                embedderSession = null
-                swapperSession = null
+                closeSessions()
                 state = LiveFaceEngineState.Fallback(error)
             } else {
                 processor = activeProcessor
@@ -93,28 +81,43 @@ class OnDeviceFaceSwapEngine(
             }
             state
         } catch (error: Exception) {
-            embedderSession?.close()
-            swapperSession?.close()
-            embedderSession = null
-            swapperSession = null
+            closeSessions()
             state = LiveFaceEngineState.Fallback(
-                "AI model runtime failed to initialize: ${error.message ?: "unknown error"}"
+                "AI runtime failed to initialize: ${error.message ?: "unknown error"}"
             )
             state
         }
     }
 
-    override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame {
-        val currentState = state
-        return FaceSwapFrame.fallback(
-            when (currentState) {
-                LiveFaceEngineState.Ready -> "AI runtime loaded; camera frame required for neural output"
-                is LiveFaceEngineState.Fallback -> currentState.reason
-                LiveFaceEngineState.Preparing -> "AI models are preparing"
-                LiveFaceEngineState.Idle -> "AI engine is idle"
+    private fun ensureRequiredModels(appContext: Context, store: ModelStore) {
+        if (missingModelsOverride != null) return
+        if (store.missingRequiredModels().isEmpty()) return
+
+        val downloader = ModelDownloader(appContext)
+        var lastError: Exception? = null
+        repeat(3) {
+            try {
+                downloader.downloadRequired()
+                lastError = null
+                return
+            } catch (error: Exception) {
+                lastError = error
             }
-        )
+        }
+        lastError?.let { throw it }
     }
+
+    private fun closeSessions() {
+        processor?.clear()
+        processor = null
+        embedderSession?.close()
+        swapperSession?.close()
+        embedderSession = null
+        swapperSession = null
+    }
+
+    override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame =
+        FaceSwapFrame.fallback("Live neural frame required")
 
     override fun processFrame(frame: Bitmap, tracking: FaceTrackingResult): FaceSwapFrame {
         if (state !is LiveFaceEngineState.Ready) return processFrame(tracking)
@@ -134,11 +137,6 @@ class OnDeviceFaceSwapEngine(
     }
 
     override fun close() {
-        processor?.clear()
-        processor = null
-        embedderSession?.close()
-        swapperSession?.close()
-        embedderSession = null
-        swapperSession = null
+        closeSessions()
     }
 }
