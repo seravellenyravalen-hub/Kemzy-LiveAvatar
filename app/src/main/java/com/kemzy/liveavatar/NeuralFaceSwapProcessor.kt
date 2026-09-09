@@ -22,9 +22,9 @@ import java.nio.FloatBuffer
 import kotlin.math.max
 
 /**
- * Executes the local ArcFace -> EMAP -> INSwapper path.
- * The source image is prepared once; every camera frame is then swapped using
- * the current tracked face geometry and expression, including eye/mouth motion.
+ * Local ArcFace -> EMAP -> INSwapper pipeline.
+ * The selected reference is prepared once; every camera frame is transformed from
+ * the live tracked face. The network is never consulted during frame processing.
  */
 class NeuralFaceSwapProcessor(
     private val context: Context,
@@ -40,7 +40,8 @@ class NeuralFaceSwapProcessor(
     }
 
     fun prepareAvatar(uri: String, emapFile: java.io.File): String? {
-        val source = context.contentResolver.openInputStream(Uri.parse(uri)).use { input ->
+        val parsed = Uri.parse(uri)
+        val source = context.contentResolver.openInputStream(parsed).use { input ->
             android.graphics.BitmapFactory.decodeStream(input)
         } ?: return "Could not decode selected avatar"
 
@@ -73,8 +74,6 @@ class NeuralFaceSwapProcessor(
         val target = Bitmap.createBitmap(frame, crop.left, crop.top, crop.width, crop.height)
         val target128 = Bitmap.createScaledBitmap(target, 128, 128, true)
         return try {
-            // INSwapper receives the current camera face, so its mouth/eyes/expression
-            // are driven by the user's live movement rather than by the static reference.
             val swapped = runSwapper(swapperSession, target128, latent)
             val resized = Bitmap.createScaledBitmap(swapped, crop.width, crop.height, true)
             val output = frame.copy(Bitmap.Config.ARGB_8888, true)
@@ -124,18 +123,19 @@ class NeuralFaceSwapProcessor(
         val canvas = Canvas(output)
         val mask = Bitmap.createBitmap(swapped.width, swapped.height, Bitmap.Config.ALPHA_8)
         val maskCanvas = Canvas(mask)
-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-        maskPaint.color = Color.WHITE
+        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         maskCanvas.drawOval(
-            swapped.width * 0.10f,
-            swapped.height * 0.07f,
-            swapped.width * 0.90f,
-            swapped.height * 0.96f,
+            swapped.width * 0.04f,
+            swapped.height * 0.02f,
+            swapped.width * 0.96f,
+            swapped.height * 0.99f,
             maskPaint
         )
 
-        canvas.saveLayer(left.toFloat(), top.toFloat(),
-            (left + swapped.width).toFloat(), (top + swapped.height).toFloat(), null)
+        canvas.saveLayer(
+            left.toFloat(), top.toFloat(),
+            (left + swapped.width).toFloat(), (top + swapped.height).toFloat(), null
+        )
         canvas.drawBitmap(swapped, left.toFloat(), top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
         val maskPaintOnCanvas = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             xfermode = PorterDuffXfermode(PorterDuff.DST_IN)
@@ -153,8 +153,7 @@ class NeuralFaceSwapProcessor(
         val inputName = session.inputNames.firstOrNull() ?: error("ArcFace model has no input")
         OnnxTensor.createTensor(environment, FloatBuffer.wrap(tensorData), longArrayOf(1, 3, 112, 112)).use { tensor ->
             session.run(mapOf(inputName to tensor)).use { result ->
-                val value = result[0].value
-                return flattenFloat(value, 512)
+                return flattenFloat(result[0].value, 512)
             }
         }
     }
