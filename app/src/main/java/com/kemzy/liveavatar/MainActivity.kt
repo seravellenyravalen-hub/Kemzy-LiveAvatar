@@ -119,15 +119,15 @@ class MainActivity : ComponentActivity() {
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
 
         faceTracker = FaceTracker(
-            onResult = { tracking, bitmap ->
-                if (bitmap == null) return@FaceTracker
+            onResult = onFrame@{ tracking, bitmap ->
+                if (bitmap == null) return@onFrame
                 if (!liveSessionStore.isActive || !faceSwapEngine.isReady) {
                     bitmap.recycle()
-                    return@FaceTracker
+                    return@onFrame
                 }
                 if (!modelFrameBusy.compareAndSet(false, true)) {
                     bitmap.recycle()
-                    return@FaceTracker
+                    return@onFrame
                 }
                 modelExecutor.execute {
                     try {
