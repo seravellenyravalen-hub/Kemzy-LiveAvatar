@@ -1,6 +1,7 @@
 package com.kemzy.liveavatar
 
 import android.Manifest
+import android.companion.virtual.VirtualDeviceManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -39,11 +40,20 @@ class VirtualCameraCapability(
                 return VirtualCameraCapability(Build.VERSION.SDK_INT, false, false, false)
             }
 
-            val manager = context.getSystemService("virtualdevice")
-                ?: return VirtualCameraCapability(Build.VERSION.SDK_INT, false, false, false)
+            val managerPresent = runCatching {
+                context.getSystemService(VirtualDeviceManager::class.java) != null
+            }.getOrDefault(false)
+
+            if (!managerPresent) {
+                return VirtualCameraCapability(Build.VERSION.SDK_INT, false, false, false)
+            }
 
             val supported = runCatching {
-                val method = manager.javaClass.getMethod("isVirtualCameraSupported")
+                // isVirtualCameraSupported() is a static framework API. Invoke it on the
+                // class, not on the service instance. Reflection keeps the app tolerant of
+                // Android 15 OEM builds where the API may be absent/flagged.
+                val method = VirtualDeviceManager::class.java
+                    .getMethod("isVirtualCameraSupported")
                 (method.invoke(null) as? Boolean) ?: false
             }.getOrDefault(false)
 
@@ -52,12 +62,24 @@ class VirtualCameraCapability(
                 Manifest.permission.CREATE_VIRTUAL_DEVICE
             ) == PackageManager.PERMISSION_GRANTED
 
-            return VirtualCameraCapability(
-                Build.VERSION.SDK_INT,
-                true,
-                supported,
-                permissionGranted
+            return fromPlatformProbe(
+                apiLevel = Build.VERSION.SDK_INT,
+                virtualDeviceManagerPresent = managerPresent,
+                virtualCameraSupported = supported,
+                createVirtualDevicePermissionGranted = permissionGranted
             )
         }
+
+        internal fun fromPlatformProbe(
+            apiLevel: Int,
+            virtualDeviceManagerPresent: Boolean,
+            virtualCameraSupported: Boolean,
+            createVirtualDevicePermissionGranted: Boolean
+        ): VirtualCameraCapability = VirtualCameraCapability(
+            apiLevel = apiLevel,
+            virtualDeviceManagerPresent = virtualDeviceManagerPresent,
+            virtualCameraSupported = virtualCameraSupported,
+            createVirtualDevicePermissionGranted = createVirtualDevicePermissionGranted
+        )
     }
 }
