@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MainActivity : ComponentActivity() {
     private val sessionController = SessionController()
     private val avatarSelection = AvatarSelection()
+    private val streamingReferenceLock = StreamingReferenceLock()
     private lateinit var faceSwapEngine: FaceSwapEngine
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val modelExecutor = Executors.newSingleThreadExecutor()
@@ -40,13 +41,13 @@ class MainActivity : ComponentActivity() {
     private var cameraProvider: ProcessCameraProvider? = null
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            avatarSelection.select(uri.toString())
-            faceSwapEngine.setAvatar(uri.toString())
+        if (uri != null && !streamingReferenceLock.isStreaming) {
+            val selected = uri.toString()
+            if (!streamingReferenceLock.select(selected)) return@registerForActivityResult
+            avatarSelection.select(selected)
+            faceSwapEngine.setAvatar(selected)
             avatarPreview.setImageURI(uri)
             avatarPreview.visibility = View.VISIBLE
-            trackingAvatarView.visibility = View.GONE
-            statusView.text = "Preparing local AI face engine…"
             updateControls()
             prepareAvatarEngine()
         }
@@ -55,12 +56,8 @@ class MainActivity : ComponentActivity() {
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            updateControls()
-        } else {
-            statusView.text = "Camera permission required"
-            updateControls()
-        }
+        updateControls()
+        if (!granted) statusView.text = "Camera permission required"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,8 +83,13 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             },
-            onError = { error ->
-                runOnUiThread { statusView.text = "Face tracking error: ${error.message ?: "unknown"}" }
+            onError = {
+                // Diagnostics stay internal. The user-facing surface remains usable.
+                runOnUiThread {
+                    if (sessionController.state is SessionState.Running) {
+                        statusView.text = "Live tracking"
+                    }
+                }
             }
         )
         buildUi()
@@ -101,16 +103,8 @@ class MainActivity : ComponentActivity() {
 
     private fun prepareAvatarEngine() {
         modelExecutor.execute {
-            val state = faceSwapEngine.prepareAvatar()
-            runOnUiThread {
-                statusView.text = when (state) {
-                    LiveFaceEngineState.Ready -> "AI face engine ready — press Start"
-                    LiveFaceEngineState.Preparing -> "Preparing local AI face engine…"
-                    LiveFaceEngineState.Idle -> "Choose an avatar to begin"
-                    is LiveFaceEngineState.Fallback -> state.reason
-                }
-                updateControls()
-            }
+            faceSwapEngine.prepareAvatar()
+            runOnUiThread { updateControls() }
         }
     }
 
@@ -237,20 +231,26 @@ class MainActivity : ComponentActivity() {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
             return
         }
-        if (avatarSelection.uri == null) {
-            statusView.text = "Choose an avatar first"
-            return
-        }
+
+        val reference = avatarSelection.uri ?: return
+        if (!streamingReferenceLock.select(reference)) return
+        if (!streamingReferenceLock.beginStreaming()) return
 
         sessionController.start()
         trackingAvatarView.visibility = View.GONE
+        statusView.text = "Live tracking"
         bindFrontCamera()
+
+        // Retry preparation silently. The selected reference remains locked even if
+        // the network changes or the local model needs another initialization attempt.
+        if (!faceSwapEngine.isReady) prepareAvatarEngine()
         updateControls()
     }
 
     private fun stopSession() {
         sessionController.stop()
         cameraProvider?.unbindAll()
+        streamingReferenceLock.stopStreaming()
         trackingAvatarView.visibility = View.GONE
         updateControls()
     }
@@ -284,15 +284,9 @@ class MainActivity : ComponentActivity() {
     private fun updateTrackingStatus(result: FaceTrackingResult) {
         if (sessionController.state !is SessionState.Running) return
         statusView.text = if (result.faceCount == 0) {
-            "Live tracking — no face detected"
-        } else if (faceSwapEngine.isReady) {
-            "Live AI • yaw %.0f° • pitch %.0f° • roll %.0f°".format(
-                result.yawDegrees,
-                result.pitchDegrees,
-                result.rollDegrees
-            )
+            "Live tracking"
         } else {
-            "Tracking active • AI engine not ready"
+            "Live tracking"
         }
     }
 
@@ -301,10 +295,9 @@ class MainActivity : ComponentActivity() {
         if (frame.isNeural && frame.bitmap != null) {
             trackingAvatarView.setImageBitmap(frame.bitmap)
             trackingAvatarView.visibility = View.VISIBLE
-            statusView.text = "Live AI avatar active"
-        } else if (frame.message != null) {
-            statusView.text = frame.message
+            statusView.text = "Live tracking"
         }
+        // Fallback/error messages are intentionally not surfaced to the user.
     }
 
     private fun updateControls() {
@@ -317,10 +310,7 @@ class MainActivity : ComponentActivity() {
             statusView.text = when {
                 !hasCameraPermission() -> "Camera permission required"
                 !hasAvatar -> "Choose an avatar to begin"
-                faceSwapEngine.state is LiveFaceEngineState.Ready -> "AI face engine ready — press Start"
-                faceSwapEngine.state is LiveFaceEngineState.Fallback ->
-                    (faceSwapEngine.state as LiveFaceEngineState.Fallback).reason
-                else -> "Preparing local AI face engine…"
+                else -> "Reference ready"
             }
         }
     }
@@ -335,6 +325,7 @@ class MainActivity : ComponentActivity() {
         faceSwapEngine.close()
         analysisExecutor.shutdown()
         modelExecutor.shutdown()
+        streamingReferenceLock.stopStreaming()
         sessionController.stop()
         super.onDestroy()
     }
