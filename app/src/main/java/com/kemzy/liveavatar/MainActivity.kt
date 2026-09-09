@@ -52,6 +52,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val requestCameraPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            updateControls()
+        } else {
+            statusView.text = "Camera permission required"
+            updateControls()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
@@ -84,7 +95,7 @@ class MainActivity : ComponentActivity() {
         if (hasCameraPermission()) {
             updateControls()
         } else {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+            requestCameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -223,7 +234,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startSession() {
         if (!hasCameraPermission()) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+            requestCameraPermission.launch(Manifest.permission.CAMERA)
             return
         }
         if (avatarSelection.uri == null) {
@@ -307,7 +318,8 @@ class MainActivity : ComponentActivity() {
                 !hasCameraPermission() -> "Camera permission required"
                 !hasAvatar -> "Choose an avatar to begin"
                 faceSwapEngine.state is LiveFaceEngineState.Ready -> "AI face engine ready — press Start"
-                faceSwapEngine.state is LiveFaceEngineState.Fallback -> (faceSwapEngine.state as LiveFaceEngineState.Fallback).reason
+                faceSwapEngine.state is LiveFaceEngineState.Fallback ->
+                    (faceSwapEngine.state as LiveFaceEngineState.Fallback).reason
                 else -> "Preparing local AI face engine…"
             }
         }
@@ -317,17 +329,6 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST) {
-            updateControls()
-        }
-    }
-
     override fun onDestroy() {
         cameraProvider?.unbindAll()
         faceTracker.close()
@@ -336,9 +337,5 @@ class MainActivity : ComponentActivity() {
         modelExecutor.shutdown()
         sessionController.stop()
         super.onDestroy()
-    }
-
-    private companion object {
-        const val CAMERA_PERMISSION_REQUEST = 1001
     }
 }
