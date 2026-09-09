@@ -76,7 +76,7 @@ class CameraSettingsActivity : ComponentActivity() {
         }
         root.addView(virtualCameraStatus)
         root.addView(TextView(this).apply {
-            text = "System-wide camera mode is only available when the Android firmware exposes the platform virtual-camera service. Kemzy will never show this as enabled unless the device reports that capability."
+            text = "Kemzy requests the Android virtual-device permission when supported. A normal APK cannot grant itself this system permission; the status below therefore distinguishes platform support from actual registration access."
             textSize = 14f
             setTextColor(0xFFBDBDBD.toInt())
             setPadding(0, 0, 0, 16)
@@ -114,10 +114,13 @@ class CameraSettingsActivity : ComponentActivity() {
         microphoneButton.isEnabled = !microphoneGranted
 
         val capability = VirtualCameraCapability.probe(this)
-        virtualCameraStatus.text = if (capability.isSupported) {
-            "System virtual camera: AVAILABLE — platform support detected"
-        } else {
-            "System virtual camera: UNAVAILABLE — this firmware does not expose a usable platform virtual camera"
+        virtualCameraStatus.text = when (capability.status) {
+            VirtualCameraCapability.Status.AVAILABLE ->
+                "System virtual camera: AVAILABLE — Kemzy can register with the platform"
+            VirtualCameraCapability.Status.PRIVILEGE_REQUIRED ->
+                "System virtual camera: PLATFORM SUPPORTED — system registration privilege required"
+            VirtualCameraCapability.Status.UNAVAILABLE ->
+                "System virtual camera: UNAVAILABLE — firmware/platform support not exposed"
         }
     }
 
