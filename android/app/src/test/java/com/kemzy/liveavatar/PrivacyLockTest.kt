@@ -18,4 +18,9 @@ class PrivacyLockTest {
         val methods = PrivacyLock::class.java.declaredMethods.map { it.name }
         assertFalse(methods.any { it.contains("biometric", ignoreCase = true) })
     }
+
+    @Test fun configured_debug_passcode_unlocks() {
+        val lock = PrivacyLock { candidate -> candidate == BuildConfig.PRIVACY_PASSCODE }
+        assertTrue(lock.unlock(BuildConfig.PRIVACY_PASSCODE))
+    }
 }
