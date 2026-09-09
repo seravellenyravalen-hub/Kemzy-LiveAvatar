@@ -7,6 +7,14 @@ data class FaceModelDescriptor(
     val remoteUrl: String? = null
 )
 
+/**
+ * Runtime models used by Kemzy-LiveAvatar's Android adaptation of the
+ * Deep-Live-Cam/InsightFace live-swap pipeline.
+ *
+ * The ArcFace identity model extracts the exact identity embedding from the
+ * selected source photo. INSwapper then transfers that identity to the live
+ * target face. No generated avatar image is used in the inference path.
+ */
 object FaceModelManifest {
     val required = listOf(
         FaceModelDescriptor(
