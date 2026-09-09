@@ -2,11 +2,13 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from .config import settings
 from .deep_live_cam_runtime import DeepLiveCamRuntime
 from .models import ModelRuntime
 from .sessions import SessionStore
+from .webrtc import webrtc_sessions
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Kemzy Remote Live Backend", version="1.0.0")
@@ -17,6 +19,11 @@ runtime: ModelRuntime = DeepLiveCamRuntime(
 )
 sessions = SessionStore()
 _runtime_error: str | None = None
+
+
+class WebRTCOffer(BaseModel):
+    sdp: str
+    type: str
 
 
 @app.on_event("startup")
@@ -81,10 +88,35 @@ async def upload_reference(
     return {"status": "ok", "model_ready": runtime.ready}
 
 
+@app.post("/v1/sessions/{session_id}/offer")
+async def accept_offer(
+    session_id: str,
+    offer: WebRTCOffer,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    session = _authorized(session_id, authorization)
+    if session.reference is None:
+        raise HTTPException(status_code=409, detail="reference image is required")
+    if not runtime.ready:
+        raise HTTPException(status_code=503, detail="inference runtime is not ready")
+    try:
+        sdp, sdp_type = await webrtc_sessions.accept_offer(
+            session_id=session_id,
+            sdp=offer.sdp,
+            sdp_type=offer.type,
+            runtime=runtime,
+        )
+    except Exception as exc:
+        await webrtc_sessions.close(session_id)
+        raise HTTPException(status_code=502, detail=f"WebRTC negotiation failed: {exc}") from exc
+    return {"sdp": sdp, "type": sdp_type}
+
+
 @app.delete("/v1/sessions/{session_id}")
-def delete_session(session_id: str, authorization: str | None = Header(default=None)) -> dict[str, str]:
+async def delete_session(session_id: str, authorization: str | None = Header(default=None)) -> dict[str, str]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="authorization required")
     if not sessions.delete(session_id, authorization[7:].strip()):
         raise HTTPException(status_code=401, detail="invalid session credentials")
+    await webrtc_sessions.close(session_id)
     return {"status": "stopped"}
