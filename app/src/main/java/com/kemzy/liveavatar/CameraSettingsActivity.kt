@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 class CameraSettingsActivity : ComponentActivity() {
     private lateinit var cameraStatus: TextView
     private lateinit var microphoneStatus: TextView
+    private lateinit var virtualCameraStatus: TextView
     private lateinit var cameraButton: Button
     private lateinit var microphoneButton: Button
 
@@ -70,6 +71,17 @@ class CameraSettingsActivity : ComponentActivity() {
         }
         root.addView(microphoneButton)
 
+        virtualCameraStatus = statusText().apply {
+            setPadding(0, 22, 0, 10)
+        }
+        root.addView(virtualCameraStatus)
+        root.addView(TextView(this).apply {
+            text = "System-wide camera mode is only available when the Android firmware exposes the platform virtual-camera service. Kemzy will never show this as enabled unless the device reports that capability."
+            textSize = 14f
+            setTextColor(0xFFBDBDBD.toInt())
+            setPadding(0, 0, 0, 16)
+        })
+
         root.addView(Button(this).apply {
             text = "Open Android App Settings"
             setOnClickListener {
@@ -100,6 +112,13 @@ class CameraSettingsActivity : ComponentActivity() {
         microphoneStatus.text = if (microphoneGranted) "Microphone: ON — available for recording" else "Microphone: OFF — permission required"
         cameraButton.isEnabled = !cameraGranted
         microphoneButton.isEnabled = !microphoneGranted
+
+        val capability = VirtualCameraCapability.probe(this)
+        virtualCameraStatus.text = if (capability.isSupported) {
+            "System virtual camera: AVAILABLE — platform support detected"
+        } else {
+            "System virtual camera: UNAVAILABLE — this firmware does not expose a usable platform virtual camera"
+        }
     }
 
     override fun onResume() {
