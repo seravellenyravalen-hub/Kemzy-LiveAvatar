@@ -3,8 +3,9 @@ package com.kemzy.liveavatar
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.net.Uri
@@ -14,16 +15,14 @@ import ai.onnxruntime.OrtSession
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.face.FaceLandmark
 import java.nio.FloatBuffer
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 
-/**
- * Local ArcFace -> EMAP -> INSwapper pipeline.
- * The selected reference is prepared once; every camera frame is transformed from
- * the live tracked face. The network is never consulted during frame processing.
- */
+/** Android adaptation of the Deep-Live-Cam/InsightFace alignment + INSwapper path. */
 class NeuralFaceSwapProcessor(
     private val context: Context,
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
@@ -37,23 +36,20 @@ class NeuralFaceSwapProcessor(
         swapper = swapperSession
     }
 
-    fun prepareAvatar(uri: String, emapFile: java.io.File): String? {
-        val parsed = Uri.parse(uri)
-        val source = context.contentResolver.openInputStream(parsed).use { input ->
+    fun prepareAvatar(uri: String): String? {
+        val source = context.contentResolver.openInputStream(Uri.parse(uri)).use { input ->
             android.graphics.BitmapFactory.decodeStream(input)
         } ?: return "Could not decode selected avatar"
-
-        if (!emapFile.isFile || emapFile.length() <= 0L) {
-            source.recycle()
-            return "Missing inswapper EMAP data"
-        }
-
         return try {
-            val sourceFace = detectAndCropSourceFace(source)
-            val embedding = runArcFace(sourceFace)
-            val emap = loadEMap(emapFile, embedding.size, 512)
-            sourceLatent = FaceEmbeddingProjector.projectAndNormalize(embedding, emap, 512)
-            sourceFace.recycle()
+            val landmarks = detectSourceLandmarks(source)
+                ?: return "No usable face landmarks found in the selected image"
+            val aligned = FaceAlignment.align(source, landmarks, 112)
+                ?: return "Could not align the selected face"
+            try {
+                sourceLatent = l2Normalize(runArcFace(aligned))
+            } finally {
+                aligned.recycle()
+            }
             null
         } catch (error: Exception) {
             sourceLatent = null
@@ -65,122 +61,122 @@ class NeuralFaceSwapProcessor(
 
     fun process(frame: Bitmap, tracking: FaceTrackingResult): Bitmap? {
         val latent = sourceLatent ?: return null
-        val swapperSession = swapper ?: return null
-        if (tracking.faceCount <= 0) return null
-
-        val crop = FaceSwapGeometry.targetCrop(tracking, frame.width, frame.height, margin = 0.25f)
-        val target = Bitmap.createBitmap(frame, crop.left, crop.top, crop.width, crop.height)
-        val target128 = Bitmap.createScaledBitmap(target, 128, 128, true)
+        val session = swapper ?: return null
+        if (tracking.faceCount <= 0 || tracking.landmarks.size < 3) return null
+        val targetPoints = tracking.landmarks.toTypedArray()
+        val alignment = FaceAlignment.affineToCanonical(targetPoints, 128) ?: return null
+        val target128 = FaceAlignment.align(frame, targetPoints, 128) ?: return null
         return try {
-            val swapped = runSwapper(swapperSession, target128, latent)
-            val resized = Bitmap.createScaledBitmap(swapped, crop.width, crop.height, true)
-            val output = frame.copy(Bitmap.Config.ARGB_8888, true)
-            blendFace(output, resized, crop.left, crop.top)
-            swapped.recycle()
-            resized.recycle()
-            output
+            val swapped = runSwapper(session, target128, latent)
+            try {
+                val output = frame.copy(Bitmap.Config.ARGB_8888, true)
+                pasteBackFeathered(output, swapped, alignment)
+                output
+            } finally {
+                swapped.recycle()
+            }
         } finally {
-            target.recycle()
             target128.recycle()
         }
     }
 
-    fun clear() {
-        sourceLatent = null
-    }
+    fun clear() { sourceLatent = null }
 
-    private fun detectAndCropSourceFace(source: Bitmap): Bitmap {
-        val detector = FaceDetection.getClient()
+    private fun detectSourceLandmarks(source: Bitmap): Array<PointF>? {
+        val detector = FaceDetection.getClient(
+            FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                .build()
+        )
         return try {
-            val image = InputImage.fromBitmap(source, 0)
-            val faces = Tasks.await(detector.process(image))
-            val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
-                ?: return squareCrop(source)
-
-            val bounds = face.boundingBox
-            val faceWidth = bounds.width().coerceAtLeast(1)
-            val faceHeight = bounds.height().coerceAtLeast(1)
-            val side = (max(faceWidth, faceHeight) * 1.55f)
-                .toInt()
-                .coerceIn(1, minOf(source.width, source.height))
-            val centerX = bounds.exactCenterX()
-            val centerY = bounds.exactCenterY()
-            val left = (centerX - side / 2f).toInt().coerceIn(0, source.width - side)
-            val top = (centerY - side / 2f).toInt().coerceIn(0, source.height - side)
-            Bitmap.createBitmap(source, left, top, side, side)
+            val faces = Tasks.await(detector.process(InputImage.fromBitmap(source, 0)))
+            val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() } ?: return null
+            listOfNotNull(
+                face.getLandmark(FaceLandmark.LEFT_EYE)?.position,
+                face.getLandmark(FaceLandmark.RIGHT_EYE)?.position,
+                face.getLandmark(FaceLandmark.NOSE_BASE)?.position,
+                face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position,
+                face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position
+            ).map { PointF(it.x, it.y) }.takeIf { it.size >= 3 }?.toTypedArray()
         } finally {
             detector.close()
         }
     }
 
-    private fun blendFace(output: Bitmap, swapped: Bitmap, left: Int, top: Int) {
-        val canvas = Canvas(output)
-        val mask = Bitmap.createBitmap(swapped.width, swapped.height, Bitmap.Config.ALPHA_8)
-        val maskCanvas = Canvas(mask)
-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
-        maskCanvas.drawOval(
-            swapped.width * 0.04f,
-            swapped.height * 0.02f,
-            swapped.width * 0.96f,
-            swapped.height * 0.99f,
-            maskPaint
-        )
-
-        canvas.saveLayer(
-            left.toFloat(), top.toFloat(),
-            (left + swapped.width).toFloat(), (top + swapped.height).toFloat(), null
-        )
-        canvas.drawBitmap(swapped, left.toFloat(), top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
-        val maskPaintOnCanvas = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-        }
-        canvas.drawBitmap(mask, left.toFloat(), top.toFloat(), maskPaintOnCanvas)
-        maskPaintOnCanvas.xfermode = null
-        canvas.restore()
-        mask.recycle()
-    }
-
     private fun runArcFace(face: Bitmap): FloatArray {
         val session = embedder ?: error("ArcFace session is not ready")
-        val pixels = bitmapToRgb(face, 112, 112)
-        val tensorData = RgbTensorCodec.arcFace(pixels, 112, 112)
-        val inputName = session.inputNames.firstOrNull() ?: error("ArcFace model has no input")
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(tensorData), longArrayOf(1, 3, 112, 112)).use { tensor ->
-            session.run(mapOf(inputName to tensor)).use { result ->
+        val data = RgbTensorCodec.arcFace(bitmapToRgb(face, 112, 112), 112, 112)
+        val name = session.inputNames.firstOrNull() ?: error("ArcFace model has no input")
+        OnnxTensor.createTensor(environment, FloatBuffer.wrap(data), longArrayOf(1, 3, 112, 112)).use { tensor ->
+            session.run(mapOf(name to tensor)).use { result ->
                 return flattenFloat(result[0].value, 512)
             }
         }
     }
 
     private fun runSwapper(session: OrtSession, target: Bitmap, latent: FloatArray): Bitmap {
-        val targetData = RgbTensorCodec.swapper(bitmapToRgb(target, 128, 128), 128, 128)
+        val data = RgbTensorCodec.swapper(bitmapToRgb(target, 128, 128), 128, 128)
         val names = session.inputNames.toList()
         require(names.size >= 2) { "INSwapper model must have target and source inputs" }
         val targetName = names.firstOrNull { name ->
-            val lower = name.lowercase()
-            lower.contains("target") || lower.contains("img")
+            val n = name.lowercase()
+            n.contains("target") || n.contains("img") || n.contains("input")
         } ?: names[0]
         val latentName = names.firstOrNull { it != targetName } ?: names[1]
-
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(targetData), longArrayOf(1, 3, 128, 128)).use { targetTensor ->
+        OnnxTensor.createTensor(environment, FloatBuffer.wrap(data), longArrayOf(1, 3, 128, 128)).use { targetTensor ->
             OnnxTensor.createTensor(environment, FloatBuffer.wrap(latent), longArrayOf(1, 512)).use { latentTensor ->
                 session.run(mapOf(targetName to targetTensor, latentName to latentTensor)).use { result ->
-                    val output = flattenFloat(result[0].value, 3 * 128 * 128)
-                    return outputToBitmap(output)
+                    return outputToBitmap(flattenFloat(result[0].value, 3 * 128 * 128))
                 }
             }
         }
     }
 
+    private fun pasteBackFeathered(output: Bitmap, swapped: Bitmap, matrix: Matrix) {
+        val inverse = Matrix()
+        if (!matrix.invert(inverse)) return
+        val corners = floatArrayOf(0f, 0f, 128f, 0f, 128f, 128f, 0f, 128f)
+        inverse.mapPoints(corners)
+        val xs = floatArrayOf(corners[0], corners[2], corners[4], corners[6])
+        val ys = floatArrayOf(corners[1], corners[3], corners[5], corners[7])
+        val left = floor(xs.minOrNull() ?: 0f).toInt().coerceIn(0, output.width - 1)
+        val top = floor(ys.minOrNull() ?: 0f).toInt().coerceIn(0, output.height - 1)
+        val right = ceil(xs.maxOrNull() ?: 0f).toInt().coerceIn(left + 1, output.width)
+        val bottom = ceil(ys.maxOrNull() ?: 0f).toInt().coerceIn(top + 1, output.height)
+        val width = right - left
+        val height = bottom - top
+
+        val swapLayer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val local = Matrix(inverse).apply { postTranslate(-left.toFloat(), -top.toFloat()) }
+        Canvas(swapLayer).drawBitmap(swapped, local, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+
+        val mask = Bitmap.createBitmap(width, height, Bitmap.Config.ALPHA_8)
+        Canvas(mask).drawOval(width * .06f, height * .04f, width * .94f, height * .98f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = 255 })
+
+        val masked = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        Canvas(masked).apply {
+            drawBitmap(swapLayer, 0f, 0f, null)
+            drawBitmap(mask, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+            })
+        }
+        Canvas(output).drawBitmap(masked, left.toFloat(), top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
+        mask.recycle()
+        swapLayer.recycle()
+        masked.recycle()
+    }
+
     private fun outputToBitmap(values: FloatArray): Bitmap {
         val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(values.size / 3)
+        val pixels = IntArray(128 * 128)
         val plane = 128 * 128
         for (i in pixels.indices) {
             val r = (values[i].coerceIn(0f, 1f) * 255f).toInt()
             val g = (values[plane + i].coerceIn(0f, 1f) * 255f).toInt()
             val b = (values[plane * 2 + i].coerceIn(0f, 1f) * 255f).toInt()
-            pixels[i] = Color.rgb(r, g, b)
+            pixels[i] = android.graphics.Color.rgb(r, g, b)
         }
         bitmap.setPixels(pixels, 0, 128, 0, 0, 128, 128)
         return bitmap
@@ -194,28 +190,19 @@ class NeuralFaceSwapProcessor(
         if (scaled !== source) scaled.recycle()
         val rgb = FloatArray(argb.size * 3)
         for (i in argb.indices) {
-            val pixel = argb[i]
-            rgb[i * 3] = Color.red(pixel).toFloat()
-            rgb[i * 3 + 1] = Color.green(pixel).toFloat()
-            rgb[i * 3 + 2] = Color.blue(pixel).toFloat()
+            val p = argb[i]
+            rgb[i * 3] = android.graphics.Color.red(p).toFloat()
+            rgb[i * 3 + 1] = android.graphics.Color.green(p).toFloat()
+            rgb[i * 3 + 2] = android.graphics.Color.blue(p).toFloat()
         }
         return rgb
     }
 
-    private fun squareCrop(source: Bitmap): Bitmap {
-        val side = minOf(source.width, source.height)
-        val left = (source.width - side) / 2
-        val top = (source.height - side) / 2
-        return Bitmap.createBitmap(source, left, top, side, side)
-    }
-
-    private fun loadEMap(file: java.io.File, inputDimension: Int, outputDimension: Int): FloatArray {
-        val expected = inputDimension * outputDimension
-        val bytes = file.readBytes()
-        require(bytes.size >= expected * 4) { "EMAP is too small" }
-        val floats = FloatArray(expected)
-        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(floats)
-        return floats
+    private fun l2Normalize(values: FloatArray): FloatArray {
+        var sum = 0f
+        values.forEach { sum += it * it }
+        val scale = 1f / max(kotlin.math.sqrt(sum.toDouble()).toFloat(), 1e-12f)
+        return FloatArray(values.size) { values[it] * scale }
     }
 
     private fun flattenFloat(value: Any?, expected: Int): FloatArray {
