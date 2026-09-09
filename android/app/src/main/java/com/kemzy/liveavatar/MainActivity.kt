@@ -8,14 +8,19 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var status: TextView
+    private lateinit var cameraExecutor: ExecutorService
+    private val framePipeline = FramePipeline(capacity = 1)
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
 
     private val lockLauncher = registerForActivityResult(
@@ -35,6 +40,7 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.cameraPreview)
         status = findViewById(R.id.statusText)
+        cameraExecutor = Executors.newSingleThreadExecutor()
     }
 
     override fun onResume() {
@@ -56,21 +62,71 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        stopCamera()
+        cameraExecutor.shutdownNow()
+        framePipeline.clear()
+        super.onDestroy()
+    }
+
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             if (isFinishing || isDestroyed || appLock.isLocked()) return@addListener
+
             val provider = future.get()
             val preview = Preview.Builder().build().also {
-                it.surfaceProvider = previewView.surfaceProvider
+                it.setSurfaceProvider(previewView.surfaceProvider)
             }
+
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also { useCase ->
+                    useCase.setAnalyzer(
+                        cameraExecutor,
+                        LiveFrameAnalyzer(
+                            pipeline = framePipeline,
+                            onFrameAccepted = {
+                                runOnUiThread {
+                                    if (!isFinishing && !isDestroyed) {
+                                        status.text = "Live camera ready · frames flowing"
+                                    }
+                                }
+                            },
+                            onFrameDropped = {
+                                runOnUiThread {
+                                    if (!isFinishing && !isDestroyed) {
+                                        status.text = "Live camera · reducing backlog"
+                                    }
+                                }
+                            },
+                            onFrameError = { error ->
+                                runOnUiThread {
+                                    if (!isFinishing && !isDestroyed) {
+                                        status.text = "Frame processing error: ${error.message ?: "unsupported frame"}"
+                                    }
+                                }
+                            }
+                        )
+                    )
+                }
+
             provider.unbindAll()
-            provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview)
+            provider.bindToLifecycle(
+                this,
+                CameraSelector.DEFAULT_FRONT_CAMERA,
+                preview,
+                analysis
+            )
             status.text = "Live camera ready"
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun stopCamera() {
-        ProcessCameraProvider.getInstance(this).get().unbindAll()
+        runCatching {
+            ProcessCameraProvider.getInstance(this).get().unbindAll()
+        }
+        framePipeline.clear()
     }
 }
