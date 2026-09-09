@@ -17,8 +17,15 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     private val streamingReferenceLock = StreamingReferenceLock()
@@ -27,7 +34,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var faceSwapEngine: FaceSwapEngine
     private lateinit var voiceAssetStore: VoiceAssetStore
     private lateinit var voiceController: LocalVoiceController
-    private lateinit var previewView: androidx.camera.view.PreviewView
+    private lateinit var previewView: PreviewView
     private lateinit var trackingAvatarView: ImageView
     private lateinit var avatarPreview: ImageView
     private lateinit var statusView: TextView
@@ -37,7 +44,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var selectAvatarButton: Button
     private lateinit var recordVoiceButton: Button
     private lateinit var playVoiceButton: Button
+
     private var currentVoiceFile: File? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private lateinit var faceTracker: FaceTracker
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+    private val modelExecutor = Executors.newSingleThreadExecutor()
+    private val modelFrameBusy = AtomicBoolean(false)
     private val uiHandler = Handler(Looper.getMainLooper())
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -56,6 +69,8 @@ class MainActivity : ComponentActivity() {
             avatarPreview.visibility = View.VISIBLE
             prepareAvatarEngine()
             updateControls()
+        }.onFailure {
+            statusView.text = "Could not import avatar image"
         }
     }
 
@@ -70,20 +85,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val requestCameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    private val requestCameraPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) bindCameraForForeground() else statusView.text = "Camera permission required"
         updateControls()
-        if (!granted) statusView.text = "Camera permission required"
     }
 
-    private val requestMicrophonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    private val requestMicrophonePermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
         if (granted) startVoiceRecording() else voiceStatusView.text = "Microphone permission required"
     }
+
+    private val requestNotificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
-        // Defense in depth: MainActivity is never usable without an in-memory unlock.
         if (!(application as PrivacyApplication).unlocked) {
             startActivity(Intent(this, PrivacyLockActivity::class.java))
             finish()
@@ -95,25 +117,82 @@ class MainActivity : ComponentActivity() {
         voiceAssetStore = VoiceAssetStore(applicationContext)
         voiceController = LocalVoiceController(applicationContext)
         faceSwapEngine = OnDeviceFaceSwapEngine(applicationContext)
+
+        faceTracker = FaceTracker(
+            onResult = { tracking, bitmap ->
+                if (bitmap == null) return@FaceTracker
+                if (!liveSessionStore.isActive || !faceSwapEngine.isReady) {
+                    bitmap.recycle()
+                    return@FaceTracker
+                }
+                if (!modelFrameBusy.compareAndSet(false, true)) {
+                    bitmap.recycle()
+                    return@FaceTracker
+                }
+                modelExecutor.execute {
+                    try {
+                        val output = faceSwapEngine.processFrame(bitmap, tracking)
+                        if (output.isNeural && output.bitmap != null) {
+                            StreamingFrameBus.publish(output.bitmap)
+                        }
+                    } finally {
+                        bitmap.recycle()
+                        modelFrameBusy.set(false)
+                    }
+                }
+            },
+            onError = { error ->
+                runOnUiThread {
+                    if (liveSessionStore.isActive) {
+                        statusView.text = "Camera/face tracking error: ${error.message ?: "unknown error"}"
+                    }
+                }
+            }
+        )
+
         buildUi()
         restoreSessionAndAvatar()
-        if (hasCameraPermission()) updateControls() else requestCameraPermission.launch(Manifest.permission.CAMERA)
+
+        if (hasCameraPermission()) {
+            bindCameraForForeground()
+        } else {
+            requestCameraPermission.launch(Manifest.permission.CAMERA)
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     override fun onStart() {
         super.onStart()
         uiHandler.post(framePoller)
+        if (liveSessionStore.isActive) {
+            sendServiceAction(AvatarStreamingService.ACTION_FOREGROUND)
+            uiHandler.postDelayed({ bindCameraForForeground() }, 200L)
+        } else if (currentAvatarUri() != null && !faceSwapEngine.isReady) {
+            prepareAvatarEngine()
+        }
     }
 
     override fun onStop() {
         uiHandler.removeCallbacks(framePoller)
+        unbindForegroundCamera()
+        if (liveSessionStore.isActive) {
+            sendServiceAction(AvatarStreamingService.ACTION_BACKGROUND)
+        }
         super.onStop()
     }
 
     private val framePoller = object : Runnable {
         override fun run() {
             if (liveSessionStore.isActive) {
-                StreamingFrameBus.take()?.let { frame -> trackingAvatarView.setImageBitmap(frame) }
+                StreamingFrameBus.take()?.let { frame ->
+                    trackingAvatarView.setImageBitmap(frame)
+                    trackingAvatarView.visibility = View.VISIBLE
+                }
             }
             uiHandler.postDelayed(this, 33L)
         }
@@ -129,7 +208,7 @@ class MainActivity : ComponentActivity() {
             faceSwapEngine.setAvatar(reference)
             if (!liveSessionStore.isActive) prepareAvatarEngine()
         }
-        if (liveSessionStore.isActive && !streamingReferenceLock.isStreaming) {
+        if (liveSessionStore.isActive) {
             streamingReferenceLock.beginStreaming()
             previewView.visibility = View.INVISIBLE
             trackingAvatarView.visibility = View.VISIBLE
@@ -137,10 +216,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun prepareAvatarEngine() {
-        Thread {
+        val reference = currentAvatarUri() ?: return
+        faceSwapEngine.setAvatar(reference)
+        statusView.text = "Preparing local AI models…"
+        modelExecutor.execute {
             faceSwapEngine.prepareAvatar()
             runOnUiThread { updateControls() }
-        }.start()
+        }
     }
 
     private fun buildUi() {
@@ -148,6 +230,7 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF000000.toInt())
         }
+
         root.addView(TextView(this).apply {
             text = "Kemzy-LiveAvatar"
             setTextColor(0xFFFFFFFF.toInt())
@@ -157,11 +240,12 @@ class MainActivity : ComponentActivity() {
         })
 
         val container = FrameLayout(this)
-        previewView = androidx.camera.view.PreviewView(this).apply {
-            implementationMode = androidx.camera.view.PreviewView.ImplementationMode.PERFORMANCE
-            scaleType = androidx.camera.view.PreviewView.ScaleType.FILL_CENTER
+        previewView = PreviewView(this).apply {
+            implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
         }
         container.addView(previewView, FrameLayout.LayoutParams(-1, -1))
+
         trackingAvatarView = ImageView(this).apply {
             visibility = View.GONE
             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -170,24 +254,49 @@ class MainActivity : ComponentActivity() {
         container.addView(trackingAvatarView, FrameLayout.LayoutParams(-1, -1))
         root.addView(container, LinearLayout.LayoutParams(-1, 0, 1f))
 
+        val avatarRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(16, 8, 16, 4)
+        }
         avatarPreview = ImageView(this).apply {
             visibility = View.GONE
-            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "Selected avatar"
             setBackgroundColor(0xFF181818.toInt())
         }
-        root.addView(avatarPreview, LinearLayout.LayoutParams(-1, 180).apply { setMargins(16, 10, 16, 4) })
+        avatarRow.addView(avatarPreview, LinearLayout.LayoutParams(72, 72))
+        avatarRow.addView(TextView(this).apply {
+            text = "Reference image"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            setPadding(12, 0, 0, 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(avatarRow)
 
         selectAvatarButton = Button(this).apply {
             text = "Choose Avatar"
             setOnClickListener { pickAvatar.launch("image/*") }
         }
-        root.addView(selectAvatarButton, LinearLayout.LayoutParams(-1, -2).apply { setMargins(16, 4, 16, 4) })
+        root.addView(selectAvatarButton, LinearLayout.LayoutParams(-1, -2).apply {
+            setMargins(16, 2, 16, 2)
+        })
+
+        val utilityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        utilityRow.addView(Button(this).apply {
+            text = "Device Setup"
+            setOnClickListener { startActivity(Intent(this@MainActivity, DeviceSetupActivity::class.java)) }
+        })
+        root.addView(utilityRow)
 
         statusView = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 15f
             gravity = Gravity.CENTER
-            text = "Camera ready"
+            text = "Camera starting…"
             setPadding(16, 8, 16, 8)
         }
         root.addView(statusView, LinearLayout.LayoutParams(-1, -2))
@@ -195,7 +304,7 @@ class MainActivity : ComponentActivity() {
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(16, 4, 16, 8)
+            setPadding(16, 2, 16, 6)
         }
         startButton = Button(this).apply { text = "Start"; setOnClickListener { startSession() } }
         stopButton = Button(this).apply { text = "Stop"; setOnClickListener { stopSession() } }
@@ -207,21 +316,30 @@ class MainActivity : ComponentActivity() {
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER
             text = "Voice: local recording/import"
-            setPadding(16, 4, 16, 4)
+            setPadding(16, 2, 16, 2)
         }
         root.addView(voiceStatusView)
+
         val voiceControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(12, 4, 12, 12)
+            setPadding(8, 2, 8, 8)
         }
         recordVoiceButton = Button(this).apply { text = "Record Voice"; setOnClickListener { toggleRecording() } }
-        val importVoiceButton = Button(this).apply { text = "Import Voice"; setOnClickListener { pickVoice.launch(arrayOf("audio/*")) } }
-        playVoiceButton = Button(this).apply { text = "Play"; isEnabled = false; setOnClickListener { currentVoiceFile?.let(voiceController::play) } }
+        val importVoiceButton = Button(this).apply {
+            text = "Import Voice"
+            setOnClickListener { pickVoice.launch(arrayOf("audio/*")) }
+        }
+        playVoiceButton = Button(this).apply {
+            text = "Play"
+            isEnabled = false
+            setOnClickListener { currentVoiceFile?.let { voiceController.play(it) } }
+        }
         voiceControls.addView(recordVoiceButton)
         voiceControls.addView(importVoiceButton)
         voiceControls.addView(playVoiceButton)
         root.addView(voiceControls)
+
         setContentView(root)
     }
 
@@ -230,30 +348,39 @@ class MainActivity : ComponentActivity() {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
             return
         }
-        val reference = currentAvatarUri() ?: return
+        val reference = currentAvatarUri()
+        if (reference.isNullOrBlank()) {
+            statusView.text = "Choose an avatar first"
+            return
+        }
         if (!faceSwapEngine.isReady) {
+            statusView.text = "AI models are not ready yet"
             prepareAvatarEngine()
             return
         }
         if (!streamingReferenceLock.select(reference) || !streamingReferenceLock.beginStreaming()) return
 
         liveSessionStore.markActive(reference)
+        StreamingFrameBus.clear()
         val intent = Intent(this, AvatarStreamingService::class.java)
+            .setAction(AvatarStreamingService.ACTION_FOREGROUND)
             .putExtra(AvatarStreamingService.EXTRA_REFERENCE, reference)
         ContextCompat.startForegroundService(this, intent)
-        previewView.visibility = View.INVISIBLE
+        previewView.visibility = View.VISIBLE
         trackingAvatarView.visibility = View.VISIBLE
-        trackingAvatarView.setImageDrawable(null)
         statusView.text = "Live avatar active"
+        bindCameraForForeground()
         updateControls()
     }
 
     private fun stopSession() {
+        unbindForegroundCamera()
         startService(Intent(this, AvatarStreamingService::class.java).setAction(AvatarStreamingService.ACTION_STOP))
         liveSessionStore.clear()
         streamingReferenceLock.stopStreaming()
         currentAvatarUri()?.let(referenceImageStore::delete)
         clearAvatarUri()
+        StreamingFrameBus.clear()
         trackingAvatarView.setImageDrawable(null)
         trackingAvatarView.visibility = View.GONE
         previewView.visibility = View.VISIBLE
@@ -275,9 +402,54 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVoiceRecording() {
-        voiceController.startRecordingAndRemember(voiceAssetStore.newRecordingFile())
-        recordVoiceButton.text = "Stop Recording"
-        voiceStatusView.text = "Recording locally"
+        runCatching {
+            voiceController.startRecordingAndRemember(voiceAssetStore.newRecordingFile())
+            recordVoiceButton.text = "Stop Recording"
+            voiceStatusView.text = "Recording locally"
+        }.onFailure {
+            voiceStatusView.text = "Recording failed: ${it.message ?: "unknown error"}"
+        }
+    }
+
+    private fun bindCameraForForeground() {
+        if (!hasCameraPermission()) return
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
+            if (isFinishing || isDestroyed) return@addListener
+            runCatching {
+                val provider = future.get()
+                cameraProvider = provider
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(previewView.surfaceProvider)
+                }
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                    .also { useCase ->
+                        useCase.setAnalyzer(analysisExecutor) { image -> faceTracker.process(image) }
+                    }
+                provider.unbindAll()
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
+                previewView.visibility = View.VISIBLE
+                if (!liveSessionStore.isActive) statusView.text = "Camera ready"
+            }.onFailure {
+                statusView.text = "Camera initialization failed: ${it.message ?: "unknown error"}"
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun unbindForegroundCamera() {
+        cameraProvider?.unbindAll()
+        cameraProvider = null
+    }
+
+    private fun sendServiceAction(action: String) {
+        val reference = liveSessionStore.reference ?: currentAvatarUri() ?: return
+        startService(
+            Intent(this, AvatarStreamingService::class.java)
+                .setAction(action)
+                .putExtra(AvatarStreamingService.EXTRA_REFERENCE, reference)
+        )
     }
 
     private fun updateControls() {
@@ -290,7 +462,10 @@ class MainActivity : ComponentActivity() {
             statusView.text = when {
                 !hasCameraPermission() -> "Camera permission required"
                 !hasAvatar -> "Choose an avatar to begin"
-                else -> "Reference ready"
+                faceSwapEngine.state is LiveFaceEngineState.Fallback ->
+                    (faceSwapEngine.state as LiveFaceEngineState.Fallback).reason
+                faceSwapEngine.state is LiveFaceEngineState.Ready -> "AI face engine ready — press Start"
+                else -> "Preparing local AI models…"
             }
         }
     }
@@ -305,17 +480,19 @@ class MainActivity : ComponentActivity() {
         getPreferences(MODE_PRIVATE).edit().remove("avatar_uri").apply()
     }
 
-    private fun hasCameraPermission() =
+    private fun hasCameraPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     override fun onDestroy() {
-        // Backgrounding, switching to Camera, or opening another app does not lock.
-        // A finishing Activity indicates that the protected task is actually being closed.
         if (isFinishing && !isChangingConfigurations) {
             (application as PrivacyApplication).lock()
         }
+        unbindForegroundCamera()
+        faceTracker.close()
         faceSwapEngine.close()
         voiceController.close()
+        analysisExecutor.shutdownNow()
+        modelExecutor.shutdownNow()
         super.onDestroy()
     }
 }
