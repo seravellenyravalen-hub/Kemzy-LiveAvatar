@@ -10,7 +10,7 @@ class ModelManifestTest {
         val required = FaceModelManifest.required
         assertEquals(2, required.size)
         assertTrue(required.any { it.id == "arcface-embedder" && it.fileName == "w600k_r50.onnx" })
-        assertTrue(required.any { it.id == "face-swapper" && it.fileName == "inswapper_128.onnx" })
+        assertTrue(required.any { it.id == "face-swapper" && it.fileName == "inswapper_128_fp16.onnx" })
     }
 
     @Test
