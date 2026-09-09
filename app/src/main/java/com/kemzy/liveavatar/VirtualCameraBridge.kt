@@ -4,11 +4,6 @@ import android.annotation.SuppressLint
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
 import android.companion.CompanionDeviceManager
-import android.companion.virtual.VirtualDeviceManager
-import android.companion.virtual.VirtualDeviceParams
-import android.companion.virtual.camera.VirtualCamera
-import android.companion.virtual.camera.VirtualCameraCallback
-import android.companion.virtual.camera.VirtualCameraConfig
 import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraMetadata
@@ -17,16 +12,17 @@ import android.media.ImageWriter
 import android.os.Build
 import android.util.Log
 import android.view.Surface
+import java.lang.reflect.Proxy
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 
 /**
- * Real Android 15 virtual-camera producer.
+ * Real Android virtual-camera producer.
  *
- * This class never reports success until VirtualDevice + VirtualCamera are actually created.
- * On ordinary/OEM builds where the privileged virtual-device role is unavailable, creation
- * fails and the caller can expose that state instead of pretending to be a system camera.
+ * The VirtualDevice/VirtualCamera classes are SystemApi/hidden from ordinary SDK stubs,
+ * so this bridge resolves them at runtime. It never reports REGISTERED until the platform
+ * has actually created both the virtual device and virtual camera.
  */
 class VirtualCameraBridge(
     private val service: AvatarStreamingService,
@@ -34,17 +30,14 @@ class VirtualCameraBridge(
 ) {
     enum class State { STOPPED, WAITING_FOR_ASSOCIATION, REGISTERING, REGISTERED, FAILED }
 
-    @Volatile
-    var state: State = State.STOPPED
+    @Volatile var state: State = State.STOPPED
         private set
-
-    @Volatile
-    var lastError: String? = null
+    @Volatile var lastError: String? = null
         private set
 
     private val writers = ConcurrentHashMap<Int, ImageWriter>()
-    private var virtualDevice: VirtualDeviceManager.VirtualDevice? = null
-    private var virtualCamera: VirtualCamera? = null
+    private var virtualDevice: Any? = null
+    private var virtualCamera: Any? = null
 
     fun start() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
@@ -63,9 +56,9 @@ class VirtualCameraBridge(
     fun stop() {
         writers.values.forEach { runCatching { it.close() } }
         writers.clear()
-        runCatching { virtualCamera?.close() }
+        closeObject(virtualCamera)
+        closeObject(virtualDevice)
         virtualCamera = null
-        runCatching { virtualDevice?.close() }
         virtualDevice = null
         state = State.STOPPED
     }
@@ -74,10 +67,8 @@ class VirtualCameraBridge(
     private fun associateAndCreate() {
         val cdm = service.getSystemService(CompanionDeviceManager::class.java)
         val existing = cdm?.myAssociations?.firstOrNull {
-            it.packageName == service.packageName &&
-                it.displayName?.toString() == CAMERA_NAME
+            it.packageName == service.packageName && it.displayName?.toString() == CAMERA_NAME
         }
-
         if (existing != null) {
             createVirtualDevice(existing)
             return
@@ -93,13 +84,7 @@ class VirtualCameraBridge(
         cdm?.associate(request, object : CompanionDeviceManager.Callback() {
             override fun onAssociationPending(intentSender: android.content.IntentSender) {
                 try {
-                    service.startIntentSender(
-                        intentSender,
-                        null,
-                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
-                        0,
-                        0
-                    )
+                    service.startIntentSender(intentSender, null, 0, 0, 0)
                 } catch (error: Exception) {
                     fail("Virtual-camera association UI could not start: ${error.message}")
                 }
@@ -115,71 +100,98 @@ class VirtualCameraBridge(
         }, null)
     }
 
-    @SuppressLint("MissingPermission")
     private fun createVirtualDevice(association: AssociationInfo) {
         try {
             state = State.REGISTERING
-            val manager = service.getSystemService(VirtualDeviceManager::class.java)
+            val manager = service.getSystemService("virtualdevice")
                 ?: throw IllegalStateException("VirtualDeviceManager is unavailable")
+            val managerClass = Class.forName("android.companion.virtual.VirtualDeviceManager")
+            val paramsClass = Class.forName("android.companion.virtual.VirtualDeviceParams")
+            val builderClass = Class.forName("android.companion.virtual.VirtualDeviceParams$Builder")
+            val builder = builderClass.getConstructor().newInstance()
+            builderClass.getMethod("setName", String::class.java).invoke(builder, CAMERA_NAME)
+            val policyType = paramsClass.getField("POLICY_TYPE_CAMERA").getInt(null)
+            val customPolicy = paramsClass.getField("DEVICE_POLICY_CUSTOM").getInt(null)
+            builderClass.getMethod("setDevicePolicy", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                .invoke(builder, policyType, customPolicy)
+            val params = builderClass.getMethod("build").invoke(builder)
+            val create = managerClass.getMethod("createVirtualDevice", Int::class.javaPrimitiveType, paramsClass)
+            virtualDevice = create.invoke(manager, association.id, params)
 
-            virtualDevice = manager.createVirtualDevice(
-                association.id,
-                VirtualDeviceParams.Builder()
-                    .setName(CAMERA_NAME)
-                    .setDevicePolicy(
-                        VirtualDeviceParams.POLICY_TYPE_CAMERA,
-                        VirtualDeviceParams.DEVICE_POLICY_CUSTOM
-                    )
-                    .build()
+            val configClass = Class.forName("android.companion.virtual.camera.VirtualCameraConfig")
+            val configBuilderClass = Class.forName("android.companion.virtual.camera.VirtualCameraConfig$Builder")
+            val configBuilder = configBuilderClass.getConstructor(String::class.java).newInstance(CAMERA_NAME)
+            configBuilderClass.getMethod(
+                "addStreamConfig", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType
+            ).invoke(configBuilder, 640, 480, ImageFormat.YUV_420_888, 30)
+            configBuilderClass.getMethod("setLensFacing", Int::class.javaPrimitiveType)
+                .invoke(configBuilder, CameraMetadata.LENS_FACING_FRONT)
+
+            val callbackClass = Class.forName("android.companion.virtual.camera.VirtualCameraCallback")
+            val callback = Proxy.newProxyInstance(
+                callbackClass.classLoader,
+                arrayOf(callbackClass),
+                callbackInvocationHandler
             )
+            configBuilderClass.getMethod("setVirtualCameraCallback", Executor::class.java, callbackClass)
+                .invoke(configBuilder, executor, callback)
+            val config = configBuilderClass.getMethod("build").invoke(configBuilder)
 
-            val config = VirtualCameraConfig.Builder(CAMERA_NAME)
-                .addStreamConfig(640, 480, ImageFormat.YUV_420_888, 30)
-                .setLensFacing(CameraMetadata.LENS_FACING_FRONT)
-                .setVirtualCameraCallback(executor, callback)
-                .build()
-
-            virtualCamera = virtualDevice!!.createVirtualCamera(config)
+            val createCamera = virtualDevice!!::class.java.getMethod("createVirtualCamera", configClass)
+            virtualCamera = createCamera.invoke(virtualDevice, config)
             state = State.REGISTERED
         } catch (error: SecurityException) {
             fail("Android denied virtual-camera registration: ${error.message}")
-        } catch (error: Exception) {
-            fail("Virtual-camera registration failed: ${error.message}")
+        } catch (error: Throwable) {
+            val cause = error.cause ?: error
+            fail("Virtual-camera registration failed: ${cause.message ?: cause.javaClass.simpleName}")
         }
     }
 
-    private val callback = object : VirtualCameraCallback {
-        override fun onStreamConfigured(
-            streamId: Int,
-            surface: Surface,
-            width: Int,
-            height: Int,
-            format: Int
-        ) {
-            if (format != ImageFormat.YUV_420_888) {
-                Log.w(TAG, "Unsupported virtual-camera stream format: $format")
-                return
+    private val callbackInvocationHandler = java.lang.reflect.InvocationHandler { _, method, args ->
+        when (method.name) {
+            "onStreamConfigured" -> {
+                val streamId = args?.getOrNull(0) as? Int ?: return@InvocationHandler null
+                val surface = args.getOrNull(1) as? Surface ?: return@InvocationHandler null
+                val width = args.getOrNull(2) as? Int ?: 0
+                val height = args.getOrNull(3) as? Int ?: 0
+                val format = args.getOrNull(4) as? Int ?: 0
+                configureStream(streamId, surface, width, height, format)
             }
-            runCatching {
-                writers[streamId]?.close()
-                writers[streamId] = ImageWriter.newInstance(surface, 3, ImageFormat.YUV_420_888)
-            }.onFailure { fail("Could not open virtual-camera stream: ${it.message}") }
-        }
-
-        override fun onProcessCaptureRequest(streamId: Int, frameId: Long) {
-            val writer = writers[streamId] ?: return
-            val frame = StreamingFrameBus.snapshot() ?: return
-            try {
-                writeBitmap(writer, frame)
-            } catch (error: Exception) {
-                Log.w(TAG, "Virtual-camera frame $frameId failed", error)
-            } finally {
-                frame.recycle()
+            "onProcessCaptureRequest" -> {
+                val streamId = args?.getOrNull(0) as? Int ?: return@InvocationHandler null
+                val frameId = args.getOrNull(1) as? Long ?: 0L
+                processFrame(streamId, frameId)
+            }
+            "onStreamClosed" -> {
+                val streamId = args?.getOrNull(0) as? Int ?: return@InvocationHandler null
+                writers.remove(streamId)?.close()
             }
         }
+        null
+    }
 
-        override fun onStreamClosed(streamId: Int) {
-            writers.remove(streamId)?.close()
+    private fun configureStream(streamId: Int, surface: Surface, width: Int, height: Int, format: Int) {
+        if (format != ImageFormat.YUV_420_888) {
+            fail("Unsupported virtual-camera stream format: $format")
+            return
+        }
+        runCatching {
+            writers[streamId]?.close()
+            writers[streamId] = ImageWriter.newInstance(surface, 3, ImageFormat.YUV_420_888)
+        }.onFailure { fail("Could not open virtual-camera stream: ${it.message}") }
+    }
+
+    private fun processFrame(streamId: Int, frameId: Long) {
+        val writer = writers[streamId] ?: return
+        val frame = StreamingFrameBus.snapshot() ?: return
+        try {
+            writeBitmap(writer, frame)
+        } catch (error: Exception) {
+            Log.w(TAG, "Virtual-camera frame $frameId failed", error)
+        } finally {
+            frame.recycle()
         }
     }
 
@@ -200,7 +212,6 @@ class VirtualCameraBridge(
         val scaled = if (bitmap.width != width || bitmap.height != height) {
             Bitmap.createScaledBitmap(bitmap, width, height, true)
         } else bitmap
-
         try {
             val argb = IntArray(width * height)
             scaled.getPixels(argb, 0, width, 0, 0, width, height)
@@ -217,43 +228,33 @@ class VirtualCameraBridge(
         val buffer = plane.buffer
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
-        for (y in 0 until height) {
-            val row = y * rowStride
-            for (x in 0 until width) {
-                val color = pixels[y * width + x]
-                val r = (color shr 16) and 0xff
-                val g = (color shr 8) and 0xff
-                val b = color and 0xff
-                buffer.put(row + x * pixelStride, ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16)
-            }
+        for (y in 0 until height) for (x in 0 until width) {
+            val color = pixels[y * width + x]
+            val r = (color shr 16) and 0xff
+            val g = (color shr 8) and 0xff
+            val b = color and 0xff
+            buffer.put(y * rowStride + x * pixelStride, (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).coerceIn(0, 255).toByte())
         }
     }
 
-    private fun fillChroma(
-        plane: Image.Plane,
-        pixels: IntArray,
-        width: Int,
-        height: Int,
-        isU: Boolean
-    ) {
+    private fun fillChroma(plane: Image.Plane, pixels: IntArray, width: Int, height: Int, isU: Boolean) {
         val buffer: ByteBuffer = plane.buffer
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
-        for (y in 0 until height step 2) {
-            val row = (y / 2) * rowStride
-            for (x in 0 until width step 2) {
-                val color = pixels[y * width + x]
-                val r = (color shr 16) and 0xff
-                val g = (color shr 8) and 0xff
-                val b = color and 0xff
-                val value = if (isU) {
-                    ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
-                } else {
-                    ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
-                }
-                buffer.put(row + (x / 2) * pixelStride, value.coerceIn(0, 255).toByte())
-            }
+        for (y in 0 until height step 2) for (x in 0 until width step 2) {
+            val color = pixels[y * width + x]
+            val r = (color shr 16) and 0xff
+            val g = (color shr 8) and 0xff
+            val b = color and 0xff
+            val value = if (isU) ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
+            else ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
+            buffer.put((y / 2) * rowStride + (x / 2) * pixelStride, value.coerceIn(0, 255).toByte())
         }
+    }
+
+    private fun closeObject(value: Any?) {
+        if (value == null) return
+        runCatching { value.javaClass.getMethod("close").invoke(value) }
     }
 
     private fun fail(message: String) {
