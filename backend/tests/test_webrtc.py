@@ -1,3 +1,5 @@
+from fractions import Fraction
+
 import numpy as np
 import pytest
 from av import VideoFrame
@@ -29,7 +31,7 @@ class OneFrameTrack(MediaStreamTrack):
         self.sent = True
         frame = VideoFrame.from_ndarray(np.zeros((4, 4, 3), dtype=np.uint8), format="bgr24")
         frame.pts = 11
-        frame.time_base = 1 / 30
+        frame.time_base = Fraction(1, 30)
         return frame
 
 
