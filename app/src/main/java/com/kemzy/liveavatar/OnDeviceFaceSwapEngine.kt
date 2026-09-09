@@ -33,6 +33,14 @@ class OnDeviceFaceSwapEngine(
             state = LiveFaceEngineState.Fallback("No avatar selected")
             return state
         }
+
+        // Deterministic test/fallback path: an explicitly supplied model inventory
+        // must be honored before requiring a real Android context or filesystem.
+        if (!missingModelsOverride.isNullOrEmpty()) {
+            state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
+            return state
+        }
+
         val appContext = context ?: run {
             state = LiveFaceEngineState.Fallback("Android context is required")
             return state
@@ -41,7 +49,7 @@ class OnDeviceFaceSwapEngine(
         return try {
             val store = ModelStore(appContext)
             ensureRequiredModels(appContext, store)
-            val missing = missingModelsOverride ?: store.missingRequiredModels().map { it.id }
+            val missing = store.missingRequiredModels().map { it.id }
             if (missing.isNotEmpty()) {
                 state = LiveFaceEngineState.Fallback("Required runtime models are unavailable")
                 return state
@@ -78,7 +86,7 @@ class OnDeviceFaceSwapEngine(
     }
 
     private fun ensureRequiredModels(appContext: Context, store: ModelStore) {
-        if (missingModelsOverride != null || store.missingRequiredModels().isEmpty()) return
+        if (store.missingRequiredModels().isEmpty()) return
         val downloader = ModelDownloader(appContext)
         var lastError: Exception? = null
         repeat(3) {
