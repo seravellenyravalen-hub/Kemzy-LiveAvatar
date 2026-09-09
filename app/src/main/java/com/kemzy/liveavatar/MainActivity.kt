@@ -104,7 +104,14 @@ class MainActivity : ComponentActivity() {
         if (::liveSessionStore.isInitialized && liveSessionStore.isActive && !isFinishing) {
             cameraController?.setLiveEnabled(false)
             cameraController?.pauseCamera()
-            startBackgroundStreaming()
+            val reference = currentAvatarUri()
+            if (!reference.isNullOrBlank()) {
+                startService(
+                    Intent(this, AvatarStreamingService::class.java)
+                        .setAction(AvatarStreamingService.ACTION_ENABLE_BACKGROUND_CAMERA)
+                        .putExtra(AvatarStreamingService.EXTRA_REFERENCE, reference)
+                )
+            }
         }
         super.onStop()
     }
@@ -282,6 +289,14 @@ class MainActivity : ComponentActivity() {
         }
         liveSessionStore.markActive(reference)
         cameraController?.setLiveEnabled(true)
+        // Arm the camera foreground service while the Activity is visible. Android requires
+        // camera foreground services to be created while the app has a visible Activity.
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, AvatarStreamingService::class.java)
+                .setAction(AvatarStreamingService.ACTION_ARM)
+                .putExtra(AvatarStreamingService.EXTRA_REFERENCE, reference)
+        )
         liveAvatarView.visibility = View.VISIBLE
         videoView.visibility = View.GONE
         previewView.visibility = View.GONE
@@ -324,15 +339,6 @@ class MainActivity : ComponentActivity() {
         recordButton.text = "Stop Recording"
         recordButton.isEnabled = true
         statusView.text = "Recording video + microphone audio"
-    }
-
-    private fun startBackgroundStreaming() {
-        val reference = currentAvatarUri() ?: return
-        ContextCompat.startForegroundService(
-            this,
-            Intent(this, AvatarStreamingService::class.java)
-                .putExtra(AvatarStreamingService.EXTRA_REFERENCE, reference)
-        )
     }
 
     private fun updateControls() {
