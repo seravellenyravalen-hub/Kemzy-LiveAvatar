@@ -14,18 +14,12 @@ import ai.onnxruntime.OrtSession
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetector
-import com.google.mlkit.vision.face.FaceDetectorOptions
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import kotlin.math.max
 
-/**
- * Local ArcFace -> EMAP -> INSwapper pipeline.
- * The selected reference is prepared once; every camera frame is transformed from
- * the live tracked face. The network is never consulted during frame processing.
- */
+/** Local ArcFace -> EMAP -> INSwapper pipeline. */
 class NeuralFaceSwapProcessor(
     private val context: Context,
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
@@ -44,12 +38,10 @@ class NeuralFaceSwapProcessor(
         val source = context.contentResolver.openInputStream(parsed).use { input ->
             android.graphics.BitmapFactory.decodeStream(input)
         } ?: return "Could not decode selected avatar"
-
         if (!emapFile.isFile || emapFile.length() <= 0L) {
             source.recycle()
             return "Missing inswapper EMAP data"
         }
-
         return try {
             val sourceFace = detectAndCropSourceFace(source)
             val embedding = runArcFace(sourceFace)
@@ -69,7 +61,6 @@ class NeuralFaceSwapProcessor(
         val latent = sourceLatent ?: return null
         val swapperSession = swapper ?: return null
         if (tracking.faceCount <= 0) return null
-
         val crop = FaceSwapGeometry.targetCrop(tracking, frame.width, frame.height, margin = 0.25f)
         val target = Bitmap.createBitmap(frame, crop.left, crop.top, crop.width, crop.height)
         val target128 = Bitmap.createScaledBitmap(target, 128, 128, true)
@@ -87,26 +78,17 @@ class NeuralFaceSwapProcessor(
         }
     }
 
-    fun clear() {
-        sourceLatent = null
-    }
+    fun clear() { sourceLatent = null }
 
     private fun detectAndCropSourceFace(source: Bitmap): Bitmap {
-        val detector = FaceDetection.getClient(
-            FaceDetectorOptions.Builder()
-                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .build()
+        val detector = FaceDetection.getClient()
         return try {
             val image = InputImage.fromBitmap(source, 0)
             val faces = Tasks.await(detector.process(image))
             val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
-                ?: return squareCrop(source)
-
+            if (face == null) return squareCrop(source)
             val bounds = face.boundingBox
-            val faceWidth = bounds.width().coerceAtLeast(1)
-            val faceHeight = bounds.height().coerceAtLeast(1)
-            val side = (max(faceWidth, faceHeight) * 1.55f)
+            val side = (max(bounds.width(), bounds.height()) * 1.55f)
                 .toInt()
                 .coerceIn(1, minOf(source.width, source.height))
             val centerX = bounds.exactCenterX()
@@ -123,33 +105,25 @@ class NeuralFaceSwapProcessor(
         val canvas = Canvas(output)
         val mask = Bitmap.createBitmap(swapped.width, swapped.height, Bitmap.Config.ALPHA_8)
         val maskCanvas = Canvas(mask)
-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         maskCanvas.drawOval(
-            swapped.width * 0.04f,
-            swapped.height * 0.02f,
-            swapped.width * 0.96f,
-            swapped.height * 0.99f,
-            maskPaint
+            swapped.width * 0.04f, swapped.height * 0.02f,
+            swapped.width * 0.96f, swapped.height * 0.99f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         )
-
-        canvas.saveLayer(
-            left.toFloat(), top.toFloat(),
-            (left + swapped.width).toFloat(), (top + swapped.height).toFloat(), null
-        )
+        canvas.saveLayer(left.toFloat(), top.toFloat(), (left + swapped.width).toFloat(), (top + swapped.height).toFloat(), null)
         canvas.drawBitmap(swapped, left.toFloat(), top.toFloat(), Paint(Paint.ANTI_ALIAS_FLAG))
-        val maskPaintOnCanvas = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.DST_IN)
+        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
         }
-        canvas.drawBitmap(mask, left.toFloat(), top.toFloat(), maskPaintOnCanvas)
-        maskPaintOnCanvas.xfermode = null
+        canvas.drawBitmap(mask, left.toFloat(), top.toFloat(), maskPaint)
+        maskPaint.xfermode = null
         canvas.restore()
         mask.recycle()
     }
 
     private fun runArcFace(face: Bitmap): FloatArray {
         val session = embedder ?: error("ArcFace session is not ready")
-        val pixels = bitmapToRgb(face, 112, 112)
-        val tensorData = RgbTensorCodec.arcFace(pixels, 112, 112)
+        val tensorData = RgbTensorCodec.arcFace(bitmapToRgb(face, 112, 112), 112, 112)
         val inputName = session.inputNames.firstOrNull() ?: error("ArcFace model has no input")
         OnnxTensor.createTensor(environment, FloatBuffer.wrap(tensorData), longArrayOf(1, 3, 112, 112)).use { tensor ->
             session.run(mapOf(inputName to tensor)).use { result ->
@@ -167,12 +141,10 @@ class NeuralFaceSwapProcessor(
             lower.contains("target") || lower.contains("img")
         } ?: names[0]
         val latentName = names.firstOrNull { it != targetName } ?: names[1]
-
         OnnxTensor.createTensor(environment, FloatBuffer.wrap(targetData), longArrayOf(1, 3, 128, 128)).use { targetTensor ->
             OnnxTensor.createTensor(environment, FloatBuffer.wrap(latent), longArrayOf(1, 512)).use { latentTensor ->
                 session.run(mapOf(targetName to targetTensor, latentName to latentTensor)).use { result ->
-                    val output = flattenFloat(result[0].value, 3 * 128 * 128)
-                    return outputToBitmap(output)
+                    return outputToBitmap(flattenFloat(result[0].value, 3 * 128 * 128))
                 }
             }
         }
@@ -180,7 +152,7 @@ class NeuralFaceSwapProcessor(
 
     private fun outputToBitmap(values: FloatArray): Bitmap {
         val bitmap = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(values.size / 3)
+        val pixels = IntArray(128 * 128)
         val plane = 128 * 128
         for (i in pixels.indices) {
             val r = (values[i].coerceIn(0f, 1f) * 255f).toInt()
@@ -193,8 +165,7 @@ class NeuralFaceSwapProcessor(
     }
 
     private fun bitmapToRgb(source: Bitmap, width: Int, height: Int): FloatArray {
-        val scaled = if (source.width == width && source.height == height) source
-        else Bitmap.createScaledBitmap(source, width, height, true)
+        val scaled = if (source.width == width && source.height == height) source else Bitmap.createScaledBitmap(source, width, height, true)
         val argb = IntArray(width * height)
         scaled.getPixels(argb, 0, width, 0, 0, width, height)
         if (scaled !== source) scaled.recycle()
@@ -210,9 +181,7 @@ class NeuralFaceSwapProcessor(
 
     private fun squareCrop(source: Bitmap): Bitmap {
         val side = minOf(source.width, source.height)
-        val left = (source.width - side) / 2
-        val top = (source.height - side) / 2
-        return Bitmap.createBitmap(source, left, top, side, side)
+        return Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
     }
 
     private fun loadEMap(file: java.io.File, inputDimension: Int, outputDimension: Int): FloatArray {
