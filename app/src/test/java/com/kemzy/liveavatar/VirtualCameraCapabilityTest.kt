@@ -61,4 +61,17 @@ class VirtualCameraCapabilityTest {
         assertFalse(capability.isSupported)
         assertEquals(VirtualCameraCapability.Status.UNAVAILABLE, capability.status)
     }
+
+    @Test
+    fun api35ProbeUsesStaticVirtualCameraSupportMethod() {
+        assertEquals(
+            VirtualCameraCapability.Status.PRIVILEGE_REQUIRED,
+            VirtualCameraCapability.fromPlatformProbe(
+                apiLevel = 35,
+                virtualDeviceManagerPresent = true,
+                virtualCameraSupported = true,
+                createVirtualDevicePermissionGranted = false
+            ).status
+        )
+    }
 }
