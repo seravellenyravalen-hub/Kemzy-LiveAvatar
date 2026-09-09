@@ -12,6 +12,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Keeps the physical camera and live frame pipeline alive while another app is
@@ -34,6 +36,7 @@ class LiveCameraService : LifecycleService() {
     }
 
     private val pipeline = FramePipeline(capacity = 1)
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun onCreate() {
         super.onCreate()
@@ -49,6 +52,8 @@ class LiveCameraService : LifecycleService() {
     }
 
     private fun startLive() {
+        if (active) return
+
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentTitle("Kemzy-LiveAvatar")
@@ -66,6 +71,7 @@ class LiveCameraService : LifecycleService() {
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
+            if (!active) return@addListener
             runCatching {
                 val provider = cameraProviderFuture.get()
                 val analysis = ImageAnalysis.Builder()
@@ -73,8 +79,13 @@ class LiveCameraService : LifecycleService() {
                     .build()
                     .also { useCase ->
                         useCase.setAnalyzer(
-                            ContextCompat.getMainExecutor(this),
-                            LiveFrameAnalyzer(pipeline)
+                            cameraExecutor,
+                            LiveFrameAnalyzer(
+                                pipeline = pipeline,
+                                onFrameError = { error ->
+                                    android.util.Log.e("KemzyLive", "Camera frame failed", error)
+                                }
+                            )
                         )
                     }
 
@@ -85,6 +96,7 @@ class LiveCameraService : LifecycleService() {
                     analysis
                 )
             }.onFailure {
+                android.util.Log.e("KemzyLive", "Unable to start background camera", it)
                 stopLive()
             }
         }, ContextCompat.getMainExecutor(this))
@@ -102,6 +114,7 @@ class LiveCameraService : LifecycleService() {
         active = false
         pipeline.clear()
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
+        cameraExecutor.shutdownNow()
         super.onDestroy()
     }
 
