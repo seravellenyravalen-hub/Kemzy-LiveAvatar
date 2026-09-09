@@ -1,3 +1,5 @@
 package com.kemzy.liveavatar
 
-data class Frame(val id: Long)
+import android.graphics.Bitmap
+
+data class Frame(val id: Long, val bitmap: Bitmap)
