@@ -21,6 +21,7 @@ import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val streamingReferenceLock = StreamingReferenceLock()
+    private val voiceSessionPolicy = VoiceSessionPolicy()
     private lateinit var referenceImageStore: ReferenceImageStore
     private lateinit var liveSessionStore: LiveSessionStore
     private lateinit var faceSwapEngine: FaceSwapEngine
@@ -35,6 +36,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var stopButton: Button
     private lateinit var selectAvatarButton: Button
     private lateinit var recordVoiceButton: Button
+    private lateinit var importVoiceButton: Button
     private lateinit var playVoiceButton: Button
     private var currentVoiceFile: File? = null
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -59,13 +61,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private val pickVoice = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@registerForActivityResult
+        if (uri == null || liveSessionStore.isActive) return@registerForActivityResult
         runCatching {
+            if (!voiceSessionPolicy.select(VoiceSourceType.IMPORTED_FILE)) return@runCatching
             currentVoiceFile = voiceAssetStore.import(uri)
             voiceStatusView.text = "Voice imported locally"
             playVoiceButton.isEnabled = true
+            voiceSessionPolicy.stopStreaming()
         }.onFailure {
             voiceStatusView.text = "Voice import unavailable"
+            voiceSessionPolicy.stopStreaming()
         }
     }
 
@@ -103,7 +108,10 @@ class MainActivity : ComponentActivity() {
     private val framePoller = object : Runnable {
         override fun run() {
             if (liveSessionStore.isActive) {
-                StreamingFrameBus.take()?.let { frame -> trackingAvatarView.setImageBitmap(frame) }
+                StreamingFrameBus.take()?.let { frame ->
+                    trackingAvatarView.setImageBitmap(frame)
+                    frame.recycle()
+                }
             }
             uiHandler.postDelayed(this, 33L)
         }
@@ -139,7 +147,7 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(0xFF000000.toInt())
         }
         root.addView(TextView(this).apply {
-            text = "Kemzy-LiveAvatar"
+            text = getString(R.string.app_name)
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 22f
             gravity = Gravity.CENTER
@@ -206,7 +214,7 @@ class MainActivity : ComponentActivity() {
             setPadding(12, 4, 12, 12)
         }
         recordVoiceButton = Button(this).apply { text = "Record Voice"; setOnClickListener { toggleRecording() } }
-        val importVoiceButton = Button(this).apply { text = "Import Voice"; setOnClickListener { pickVoice.launch(arrayOf("audio/*")) } }
+        importVoiceButton = Button(this).apply { text = "Import Voice"; setOnClickListener { pickVoice.launch(arrayOf("audio/*")) } }
         playVoiceButton = Button(this).apply { text = "Play"; isEnabled = false; setOnClickListener { currentVoiceFile?.let(voiceController::play) } }
         voiceControls.addView(recordVoiceButton)
         voiceControls.addView(importVoiceButton)
@@ -247,16 +255,19 @@ class MainActivity : ComponentActivity() {
         trackingAvatarView.setImageDrawable(null)
         trackingAvatarView.visibility = View.GONE
         previewView.visibility = View.VISIBLE
+        voiceSessionPolicy.stopStreaming()
         updateControls()
     }
 
     private fun toggleRecording() {
+        if (liveSessionStore.isActive) return
         if (voiceController.isRecording) {
             val file = voiceController.stopRecording()
             currentVoiceFile = file
             recordVoiceButton.text = "Record Voice"
             voiceStatusView.text = if (file != null) "Voice saved locally" else "Recording failed"
             playVoiceButton.isEnabled = file?.isFile == true
+            voiceSessionPolicy.stopStreaming()
         } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startVoiceRecording()
         } else {
@@ -265,21 +276,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVoiceRecording() {
-        voiceController.startRecordingAndRemember(voiceAssetStore.newRecordingFile())
-        recordVoiceButton.text = "Stop Recording"
-        voiceStatusView.text = "Recording locally"
+        if (liveSessionStore.isActive) return
+        if (!voiceSessionPolicy.select(VoiceSourceType.MICROPHONE) || !voiceSessionPolicy.beginStreaming()) return
+        runCatching {
+            voiceController.startRecordingAndRemember(voiceAssetStore.newRecordingFile())
+            recordVoiceButton.text = "Stop Recording"
+            voiceStatusView.text = "Recording locally"
+        }.onFailure {
+            voiceSessionPolicy.stopStreaming()
+            voiceStatusView.text = "Recording unavailable"
+        }
     }
 
     private fun updateControls() {
         val running = liveSessionStore.isActive
+        val recording = voiceController.isRecording
         val hasAvatar = currentAvatarUri() != null
         selectAvatarButton.isEnabled = !running
         startButton.isEnabled = hasCameraPermission() && hasAvatar && faceSwapEngine.isReady && !running
         stopButton.isEnabled = running
+        recordVoiceButton.isEnabled = !running || recording
+        importVoiceButton.isEnabled = !running
         if (!running) {
             statusView.text = when {
                 !hasCameraPermission() -> "Camera permission required"
                 !hasAvatar -> "Choose an avatar to begin"
+                !faceSwapEngine.isReady -> "Preparing avatar"
                 else -> "Reference ready"
             }
         }
