@@ -41,6 +41,7 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    implementation("io.getstream:stream-webrtc-android:1.3.10")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
