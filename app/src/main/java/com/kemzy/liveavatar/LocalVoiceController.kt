@@ -29,14 +29,21 @@ class LocalVoiceController(private val context: Context) {
     fun stopRecording(): File? {
         val active = recorder ?: return null
         recorder = null
-        return runCatching {
+        return try {
             active.stop()
             active.release()
-            null
-        }.getOrElse {
+            File(lastOutputPath ?: return null)
+        } catch (_: Exception) {
             active.release()
             null
         }
+    }
+
+    private var lastOutputPath: String? = null
+
+    fun startRecordingAndRemember(output: File) {
+        lastOutputPath = output.absolutePath
+        startRecording(output)
     }
 
     fun play(file: File, onComplete: () -> Unit = {}) {
