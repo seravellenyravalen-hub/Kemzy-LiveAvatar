@@ -78,7 +78,7 @@ class MainActivity : ComponentActivity() {
             onResult = { result, bitmap ->
                 runOnUiThread { updateTrackingStatus(result) }
 
-                if (bitmap == null || sessionController.state !is SessionState.Running || !faceSwapEngine.isReady) {
+                if (bitmap == null || sessionController.state !is SessionState.Running) {
                     bitmap?.recycle()
                 } else if (!modelFrameBusy.compareAndSet(false, true)) {
                     bitmap.recycle()
@@ -138,13 +138,9 @@ class MainActivity : ComponentActivity() {
             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
-        previewContainer.addView(
-            previewView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
+        previewContainer.addView(previewView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
 
         trackingAvatarView = ImageView(this).apply {
             visibility = View.GONE
@@ -153,21 +149,12 @@ class MainActivity : ComponentActivity() {
             contentDescription = "Live neural avatar"
             setBackgroundColor(0xFF000000.toInt())
         }
-        previewContainer.addView(
-            trackingAvatarView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
-        root.addView(
-            previewContainer,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        )
+        previewContainer.addView(trackingAvatarView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        root.addView(previewContainer, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
 
         avatarPreview = ImageView(this).apply {
             visibility = View.GONE
@@ -175,29 +162,17 @@ class MainActivity : ComponentActivity() {
             contentDescription = "Selected avatar"
             setBackgroundColor(0xFF181818.toInt())
         }
-        root.addView(
-            avatarPreview,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                180
-            ).apply {
-                setMargins(16, 10, 16, 4)
-            }
-        )
+        root.addView(avatarPreview, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 180
+        ).apply { setMargins(16, 10, 16, 4) })
 
         selectAvatarButton = Button(this).apply {
             text = "Choose Avatar"
             setOnClickListener { pickAvatar.launch("image/*") }
         }
-        root.addView(
-            selectAvatarButton,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(16, 4, 16, 4)
-            }
-        )
+        root.addView(selectAvatarButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(16, 4, 16, 4) })
 
         statusView = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt())
@@ -206,20 +181,15 @@ class MainActivity : ComponentActivity() {
             text = "Camera ready"
             setPadding(16, 12, 16, 12)
         }
-        root.addView(
-            statusView,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
+        root.addView(statusView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
 
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(16, 4, 16, 24)
         }
-
         startButton = Button(this).apply {
             text = "Start"
             setOnClickListener { startSession() }
@@ -228,11 +198,9 @@ class MainActivity : ComponentActivity() {
             text = "Stop"
             setOnClickListener { stopSession() }
         }
-
         controls.addView(startButton)
         controls.addView(stopButton)
         root.addView(controls)
-
         setContentView(root)
     }
 
@@ -243,7 +211,10 @@ class MainActivity : ComponentActivity() {
         }
 
         val reference = avatarSelection.uri ?: return
-        if (!faceSwapEngine.isReady) return
+        if (!faceSwapEngine.isReady) {
+            prepareAvatarEngine()
+            return
+        }
         if (!streamingReferenceLock.select(reference)) return
         if (!streamingReferenceLock.beginStreaming()) return
 
@@ -260,6 +231,7 @@ class MainActivity : ComponentActivity() {
         sessionController.stop()
         cameraProvider?.unbindAll()
         streamingReferenceLock.stopStreaming()
+        trackingAvatarView.setImageDrawable(null)
         trackingAvatarView.visibility = View.GONE
         previewView.visibility = View.VISIBLE
         updateControls()
@@ -270,24 +242,15 @@ class MainActivity : ComponentActivity() {
         future.addListener({
             val provider = future.get()
             cameraProvider = provider
-
             val preview = Preview.Builder().build().also {
                 it.surfaceProvider = previewView.surfaceProvider
             }
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-                .also { analyzer ->
-                    analyzer.setAnalyzer(analysisExecutor) { image -> faceTracker.process(image) }
-                }
-
+                .also { analyzer -> analyzer.setAnalyzer(analysisExecutor) { image -> faceTracker.process(image) } }
             provider.unbindAll()
-            provider.bindToLifecycle(
-                this,
-                CameraSelector.DEFAULT_FRONT_CAMERA,
-                preview,
-                analysis
-            )
+            provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -321,8 +284,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hasCameraPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-            PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     override fun onDestroy() {
         cameraProvider?.unbindAll()
