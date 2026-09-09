@@ -1,9 +1,11 @@
 package com.kemzy.liveavatar
 
-/** Session lock. Credential material is supplied by configuration, never hardcoded here. */
+import java.security.MessageDigest
+
+/** Session PIN lock. Only the SHA-256 digest of the PIN is stored. */
 class PrivacyLock(
     private val verifier: (String) -> Boolean = { candidate ->
-        candidate == BuildConfig.PRIVACY_PASSCODE
+        sha256(candidate) == BuildConfig.PRIVACY_PIN_SHA256
     }
 ) {
     private var unlocked = false
@@ -17,5 +19,11 @@ class PrivacyLock(
 
     fun lock() {
         unlocked = false
+    }
+
+    companion object {
+        fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
     }
 }
