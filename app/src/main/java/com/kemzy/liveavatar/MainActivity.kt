@@ -35,10 +35,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var stopButton: Button
     private lateinit var selectAvatarButton: Button
     private lateinit var recordVoiceButton: Button
-    private lateinit var importVoiceButton: Button
     private lateinit var playVoiceButton: Button
     private var currentVoiceFile: File? = null
-    private var recordingFile: File? = null
     private val uiHandler = Handler(Looper.getMainLooper())
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -105,10 +103,7 @@ class MainActivity : ComponentActivity() {
     private val framePoller = object : Runnable {
         override fun run() {
             if (liveSessionStore.isActive) {
-                StreamingFrameBus.take()?.let { frame ->
-                    trackingAvatarView.setImageBitmap(frame)
-                    frame.recycle()
-                }
+                StreamingFrameBus.take()?.let { frame -> trackingAvatarView.setImageBitmap(frame) }
             }
             uiHandler.postDelayed(this, 33L)
         }
@@ -211,7 +206,7 @@ class MainActivity : ComponentActivity() {
             setPadding(12, 4, 12, 12)
         }
         recordVoiceButton = Button(this).apply { text = "Record Voice"; setOnClickListener { toggleRecording() } }
-        importVoiceButton = Button(this).apply { text = "Import Voice"; setOnClickListener { pickVoice.launch(arrayOf("audio/*")) } }
+        val importVoiceButton = Button(this).apply { text = "Import Voice"; setOnClickListener { pickVoice.launch(arrayOf("audio/*")) } }
         playVoiceButton = Button(this).apply { text = "Play"; isEnabled = false; setOnClickListener { currentVoiceFile?.let(voiceController::play) } }
         voiceControls.addView(recordVoiceButton)
         voiceControls.addView(importVoiceButton)
@@ -258,7 +253,6 @@ class MainActivity : ComponentActivity() {
     private fun toggleRecording() {
         if (voiceController.isRecording) {
             val file = voiceController.stopRecording()
-            recordingFile = file
             currentVoiceFile = file
             recordVoiceButton.text = "Record Voice"
             voiceStatusView.text = if (file != null) "Voice saved locally" else "Recording failed"
@@ -271,9 +265,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startVoiceRecording() {
-        val file = voiceAssetStore.newRecordingFile()
-        recordingFile = file
-        voiceController.startRecordingAndRemember(file)
+        voiceController.startRecordingAndRemember(voiceAssetStore.newRecordingFile())
         recordVoiceButton.text = "Stop Recording"
         voiceStatusView.text = "Recording locally"
     }
@@ -293,8 +285,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun currentAvatarUri(): String? =
-        getPreferences(MODE_PRIVATE).getString("avatar_uri", null)
+    private fun currentAvatarUri(): String? = getPreferences(MODE_PRIVATE).getString("avatar_uri", null)
 
     private fun saveAvatarUri(uri: String) {
         getPreferences(MODE_PRIVATE).edit().putString("avatar_uri", uri).apply()
@@ -308,7 +299,7 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     override fun onDestroy() {
-        // Deliberately do not stop the camera session here. The foreground service owns it.
+        // The foreground service, not the Activity, owns the live camera session.
         faceSwapEngine.close()
         voiceController.close()
         super.onDestroy()
