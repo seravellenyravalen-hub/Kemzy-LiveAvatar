@@ -9,6 +9,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KemzyLiveAvatar">
         <activity
+            android:name=".LockActivity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:screenOrientation="portrait"
             android:exported="true">
