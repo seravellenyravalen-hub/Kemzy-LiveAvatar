@@ -3,6 +3,7 @@ package com.kemzy.liveavatar
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -23,9 +24,11 @@ class PrivacyLockActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         buildLockUi()
     }
 
+    @Suppress("DEPRECATION")
     override fun onBackPressed() {
         // Do not allow the privacy gate to be dismissed.
         moveTaskToBack(false)
@@ -61,6 +64,9 @@ class PrivacyLockActivity : FragmentActivity() {
             setHintTextColor(0xFF888888.toInt())
             gravity = Gravity.CENTER
             maxLines = 1
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+            isLongClickable = false
+            setTextIsSelectable(false)
         }
         root.addView(passcode, LinearLayout.LayoutParams(-1, -2))
 
@@ -92,7 +98,7 @@ class PrivacyLockActivity : FragmentActivity() {
     private fun verifyPasscodeAndUnlock() {
         if (!PrivacyGate.verifyPasscode(passcode.text)) {
             message.text = "Incorrect passcode"
-            passcode.selectAll()
+            passcode.text?.clear()
             return
         }
         openMainActivity()
@@ -101,7 +107,7 @@ class PrivacyLockActivity : FragmentActivity() {
     private fun biometricFlowAfterPasscode() {
         if (!PrivacyGate.verifyPasscode(passcode.text)) {
             message.text = "Enter the correct passcode before using fingerprint"
-            passcode.selectAll()
+            passcode.text?.clear()
             return
         }
 
