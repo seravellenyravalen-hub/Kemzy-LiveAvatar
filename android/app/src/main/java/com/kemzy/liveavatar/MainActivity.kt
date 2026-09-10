@@ -3,7 +3,9 @@ package com.kemzy.liveavatar
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Button
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,14 +21,37 @@ import java.util.concurrent.Executors
 class MainActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var status: TextView
+    private lateinit var sourceText: TextView
+    private lateinit var liveButton: Button
+    private lateinit var stopButton: Button
     private lateinit var cameraExecutor: ExecutorService
+
     private val framePipeline = FramePipeline(capacity = 1)
+    private val sourceFaces = SourceFaceRepository()
+    private val liveState = LiveSessionState()
+    private val liveController = LiveSessionController(liveState)
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
 
     private val lockLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode != RESULT_OK) finish()
+    }
+
+    private val sourcePicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@registerForActivityResult
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        sourceFaces.select(uri.toString())
+        liveState.selectSource(uri.toString())
+        sourceText.text = "Source face: selected"
+        status.text = "Source face ready · tap LIVE"
     }
 
     private val permissionLauncher = registerForActivityResult(
@@ -40,7 +65,26 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.cameraPreview)
         status = findViewById(R.id.statusText)
+        sourceText = findViewById(R.id.sourceText)
+        liveButton = findViewById(R.id.liveButton)
+        stopButton = findViewById(R.id.stopButton)
         cameraExecutor = Executors.newSingleThreadExecutor()
+
+        findViewById<Button>(R.id.selectSourceButton).setOnClickListener {
+            sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp"))
+        }
+        liveButton.setOnClickListener {
+            runCatching {
+                liveController.start()
+                status.text = "Live mode active · AI swap engine requires a compatible model"
+            }.onFailure { error ->
+                status.text = error.message ?: "Select a source face first."
+            }
+        }
+        stopButton.setOnClickListener {
+            liveController.stop()
+            status.text = "Live mode stopped"
+        }
     }
 
     override fun onResume() {
@@ -57,12 +101,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        liveController.stop()
         stopCamera()
         appLock.lock()
         super.onPause()
     }
 
     override fun onDestroy() {
+        liveController.stop()
         stopCamera()
         cameraExecutor.shutdownNow()
         framePipeline.clear()
@@ -89,8 +135,8 @@ class MainActivity : ComponentActivity() {
                             pipeline = framePipeline,
                             onFrameAccepted = {
                                 runOnUiThread {
-                                    if (!isFinishing && !isDestroyed) {
-                                        status.text = "Live camera ready · frames flowing"
+                                    if (!isFinishing && !isDestroyed && !liveController.isRunning) {
+                                        status.text = "Camera ready · select a source face"
                                     }
                                 }
                             },
@@ -119,7 +165,7 @@ class MainActivity : ComponentActivity() {
                 preview,
                 analysis
             )
-            status.text = "Live camera ready"
+            status.text = "Camera ready · select a source face"
         }, ContextCompat.getMainExecutor(this))
     }
 
