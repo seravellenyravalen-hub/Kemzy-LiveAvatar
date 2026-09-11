@@ -44,7 +44,7 @@ dependencies {
     implementation("androidx.camera:camera-view:1.6.2")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     implementation("com.google.mlkit:face-detection:16.1.7")
-    implementation("com.github.pedroSG94.RootEncoder:library:2.8.0")
+    implementation("com.github.pedroSG94.RootEncoder:library:2.7.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test:2.2.10")
     testImplementation("org.robolectric:robolectric:4.16.1")
