@@ -5,6 +5,7 @@ import android.graphics.Color
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
@@ -15,15 +16,17 @@ import kotlin.math.min
  *
  * The decoder follows the public InsightFace SCRFD implementation: 2 anchors
  * per feature-map location, distances scaled by stride, five keypoints and NMS.
+ * The model session is opened directly from disk so its weights are not copied
+ * into a large Java ByteArray during Live startup.
  */
 class ScrfdOnnxDetector(
-    modelBytes: ByteArray,
+    modelFile: File,
     private val threshold: Float = 0.5f,
     private val nmsThreshold: Float = 0.4f,
     private val inputSize: Int = 640
 ) : FaceDetector, AutoCloseable {
     private val environment = OrtEnvironment.getEnvironment()
-    private val session = environment.createSession(modelBytes, OrtSession.SessionOptions())
+    private val session = createSession(modelFile)
     private val inputName = session.inputNames.first()
 
     override fun detect(frame: Bitmap): List<DetectedFace> {
@@ -153,6 +156,13 @@ class ScrfdOnnxDetector(
     }
 
     override fun close() = session.close()
+
+    private fun createSession(modelFile: File): OrtSession {
+        require(modelFile.isFile && modelFile.length() > 0) {
+            "SCRFD model is missing or empty: ${modelFile.absolutePath}"
+        }
+        return environment.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
+    }
 
     private data class Candidate(val score: Float, val box: FloatArray, val landmarks: FloatArray)
 }
