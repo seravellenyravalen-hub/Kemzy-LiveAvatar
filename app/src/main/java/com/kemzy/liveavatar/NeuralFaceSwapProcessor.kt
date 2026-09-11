@@ -17,6 +17,8 @@ import com.google.mlkit.vision.face.FaceDetection
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.channels.FileChannel
+import java.nio.file.StandardOpenOption
 import kotlin.math.max
 
 /**
@@ -227,28 +229,15 @@ class NeuralFaceSwapProcessor(
 
     private fun loadEMap(file: java.io.File, inputDimension: Int, outputDimension: Int): FloatArray {
         val expected = inputDimension * outputDimension
-        require(file.length() >= expected.toLong() * 4L) { "EMAP is too small" }
+        val bytesRequired = expected.toLong() * 4L
+        require(file.length() >= bytesRequired) { "EMAP is too small" }
+        require(bytesRequired <= Int.MAX_VALUE.toLong()) { "EMAP is too large for this runtime" }
+
         val floats = FloatArray(expected)
-        file.inputStream().use { input ->
-            val buffer = ByteArray(64 * 1024)
-            val byteBuffer = ByteBuffer.allocate(64 * 1024).order(ByteOrder.LITTLE_ENDIAN)
-            var offset = 0
-            var carry = 0
-            while (offset < expected) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                byteBuffer.clear()
-                byteBuffer.put(buffer, 0, read)
-                byteBuffer.flip()
-                val floatCount = minOf(byteBuffer.remaining() / 4, expected - offset)
-                for (i in 0 until floatCount) floats[offset + i] = byteBuffer.float
-                offset += floatCount
-                carry = read - floatCount * 4
-                if (carry != 0) {
-                    throw IllegalStateException("EMAP is not 4-byte aligned")
-                }
-            }
-            require(offset == expected) { "EMAP data is incomplete" }
+        FileChannel.open(file.toPath(), StandardOpenOption.READ).use { channel ->
+            val mapped = channel.map(FileChannel.MapMode.READ_ONLY, 0L, bytesRequired)
+                .order(ByteOrder.LITTLE_ENDIAN)
+            mapped.asFloatBuffer().get(floats)
         }
         return floats
     }
