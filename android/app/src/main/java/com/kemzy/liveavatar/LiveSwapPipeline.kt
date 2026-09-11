@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.PointF
 import android.graphics.RectF
 
 /** Simple immutable 2-D point used by the face-analysis boundary. */
@@ -29,10 +28,7 @@ data class FaceGeometry(
     )
 }
 
-/**
- * The minimum detector contract needed by the live pipeline.
- * A detector implementation must return real landmarks; no synthetic fallback is allowed.
- */
+/** A detector must return real landmarks; there is no synthetic face fallback. */
 interface FaceDetector {
     fun detect(frame: Bitmap): FaceGeometry?
 }
@@ -49,8 +45,8 @@ interface FaceSwapper {
 
 /**
  * Maps an aligned 128x128 swap result back to the camera frame.
- * The feathered ellipse is intentionally defined in aligned-face space so its boundary
- * follows the same affine transform as the swapped pixels.
+ * The feathered ellipse is defined in aligned-face space, so its boundary follows
+ * the same affine transform as the swapped pixels.
  */
 class FaceCompositor(
     private val outputSize: Int = InswapperModelSpec.faceWidth
@@ -62,55 +58,68 @@ class FaceCompositor(
 
         val result = frame.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(result)
-        val matrix = alignmentMatrix(geometry, outputSize)
+        val matrix = targetMatrix(geometry, outputSize)
 
         canvas.save()
         canvas.concat(matrix)
         val mask = RectF(6f, 6f, outputSize - 6f, outputSize - 6f)
-        canvas.clipPath(android.graphics.Path().apply { addOval(mask, android.graphics.Path.Direction.CW) })
-        canvas.drawBitmap(swappedFace, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        canvas.clipPath(android.graphics.Path().apply {
+            addOval(mask, android.graphics.Path.Direction.CW)
+        })
+        canvas.drawBitmap(
+            swappedFace,
+            0f,
+            0f,
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        )
         canvas.restore()
         return result
     }
 
-    private fun alignmentMatrix(geometry: FaceGeometry, size: Int): Matrix {
+    private fun targetMatrix(geometry: FaceGeometry, size: Int): Matrix {
         val left = geometry.landmarks.leftEye
         val right = geometry.landmarks.rightEye
         val nose = geometry.landmarks.nose
+        require(nose.x.isFinite() && nose.y.isFinite()) { "Invalid face landmark geometry" }
+
         val eyeMidX = (left.x + right.x) * 0.5f
         val eyeMidY = (left.y + right.y) * 0.5f
         val eyeDistance = hypot(right.x - left.x, right.y - left.y).coerceAtLeast(1f)
         val scale = eyeDistance / 48f
-
         val angle = kotlin.math.atan2(right.y - left.y, right.x - left.x)
         val cos = kotlin.math.cos(angle)
         val sin = kotlin.math.sin(angle)
-        val centerX = eyeMidX
         val centerY = eyeMidY + scale * 18f
 
-        // Destination aligned square -> target coordinates.
-        val m = Matrix()
-        m.setValues(floatArrayOf(
-            scale * cos, -scale * sin, centerX - scale * cos * 64f + scale * sin * 64f,
-            scale * sin, scale * cos, centerY - scale * sin * 64f - scale * cos * 64f,
-            0f, 0f, 1f
-        ))
-        // Keep the nose referenced so the geometry cannot silently become eye-only.
-        if (!nose.x.isFinite() || !nose.y.isFinite()) {
-            throw IllegalArgumentException("Invalid face landmark geometry")
+        return Matrix().apply {
+            setValues(floatArrayOf(
+                scale * cos,
+                -scale * sin,
+                eyeMidX - scale * cos * 64f + scale * sin * 64f,
+                scale * sin,
+                scale * cos,
+                centerY - scale * sin * 64f - scale * cos * 64f,
+                0f,
+                0f,
+                1f
+            ))
         }
-        return m
     }
 
     private fun hypot(x: Float, y: Float): Float = kotlin.math.sqrt(x * x + y * y)
 }
 
-enum class LiveSwapResult {
+enum class LiveSwapStatus {
     Swapped,
     NoSourceFace,
     NoTargetFace,
     ModelUnavailable
 }
+
+data class LiveSwapOutput(
+    val status: LiveSwapStatus,
+    val frame: Bitmap? = null
+)
 
 /** Coordinates detection, alignment, embedding, INSwapper inference and paste-back. */
 class LiveSwapProcessor(
@@ -119,10 +128,15 @@ class LiveSwapProcessor(
     private val swapper: FaceSwapper,
     private val compositor: FaceCompositor
 ) {
-    fun process(frame: Bitmap?, sourceFace: Bitmap?): LiveSwapResult {
-        if (frame == null || sourceFace == null) return LiveSwapResult.NoSourceFace
-        val target = detector.detect(frame) ?: return LiveSwapResult.NoTargetFace
-        val sourceGeometry = detector.detect(sourceFace) ?: return LiveSwapResult.NoSourceFace
+    fun process(frame: Bitmap?, sourceFace: Bitmap?): LiveSwapOutput {
+        if (frame == null || sourceFace == null) {
+            return LiveSwapOutput(LiveSwapStatus.NoSourceFace)
+        }
+
+        val target = detector.detect(frame)
+            ?: return LiveSwapOutput(LiveSwapStatus.NoTargetFace)
+        val sourceGeometry = detector.detect(sourceFace)
+            ?: return LiveSwapOutput(LiveSwapStatus.NoSourceFace)
 
         val alignedSource = FaceAlignment.align(sourceFace, sourceGeometry)
         val alignedTarget = FaceAlignment.align(frame, target)
@@ -131,8 +145,8 @@ class LiveSwapProcessor(
             "Expected a 512-value source embedding, got ${embedding.size}."
         }
         val swapped = swapper.swap(alignedTarget, embedding)
-        compositor.composite(frame, swapped, target)
-        return LiveSwapResult.Swapped
+        val composited = compositor.composite(frame, swapped, target)
+        return LiveSwapOutput(LiveSwapStatus.Swapped, composited)
     }
 }
 
@@ -148,7 +162,9 @@ object FaceAlignment {
                 (right.y - left.y) * (right.y - left.y)
         ).coerceAtLeast(1f)
         val scale = size * 0.55f / distance
-        val angle = -Math.toDegrees(kotlin.math.atan2(right.y - left.y, right.x - left.x).toDouble()).toFloat()
+        val angle = -Math.toDegrees(
+            kotlin.math.atan2(right.y - left.y, right.x - left.x).toDouble()
+        ).toFloat()
 
         val matrix = Matrix().apply {
             postTranslate(-centerX, -centerY)
