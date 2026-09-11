@@ -9,11 +9,18 @@ class FramePipeline(capacity: Int = 2) {
     @Synchronized
     fun offer(frame: Frame) {
         if (!queue.offer(frame)) {
-            queue.poll()
+            queue.poll()?.bitmap?.recycle()
             queue.offer(frame)
         }
     }
 
     fun poll(): Frame? = queue.poll()
-    fun clear() = queue.clear()
+
+    @Synchronized
+    fun clear() {
+        while (true) {
+            val frame = queue.poll() ?: break
+            frame.bitmap.recycle()
+        }
+    }
 }
