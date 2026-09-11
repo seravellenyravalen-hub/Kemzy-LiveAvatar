@@ -1,9 +1,12 @@
 package com.kemzy.liveavatar
 
 import android.graphics.Bitmap
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+@RunWith(RobolectricTestRunner::class)
 class FramePipelineTest {
     @Test
     fun latestFrameWinsWhenConsumerFallsBehind() {
