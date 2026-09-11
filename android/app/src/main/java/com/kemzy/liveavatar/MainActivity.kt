@@ -102,11 +102,11 @@ class MainActivity : ComponentActivity() {
             sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp"))
         }
         findViewById<Button>(R.id.importArcFaceButton).setOnClickListener {
-            pendingModelName = "arcface_112.onnx"
+            pendingModelName = InswapperModelSpec.recognizerModelName
             modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
         }
         findViewById<Button>(R.id.importInswapperButton).setOnClickListener {
-            pendingModelName = "inswapper_128_fp16.onnx"
+            pendingModelName = "inswapper_128.onnx"
             modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
         }
         liveButton.setOnClickListener { startLive() }
@@ -118,18 +118,18 @@ class MainActivity : ComponentActivity() {
             status.text = "Select a source face first."
             return
         }
-        val recognizer = modelRepository.model("arcface_112.onnx")
+        val recognizer = modelRepository.model(InswapperModelSpec.recognizerModelName)
         val swapper = modelRepository.installedModels().firstOrNull { it.name in InswapperModelSpec.modelNames }
         if (recognizer == null || swapper == null) {
-            status.text = "AI models missing · import ArcFace and INSwapper first"
+            status.text = "AI models missing · import w600k_r50.onnx and inswapper_128.onnx first"
             return
         }
 
         runCatching {
             stopProcessingOnly()
             detector = MlKitFaceDetector()
-            embeddingEngine = OnnxInferenceEngine(recognizer.readBytes(), "ArcFace 112")
-            swapperEngine = OnnxInferenceEngine(swapper.readBytes(), "INSwapper")
+            embeddingEngine = OnnxInferenceEngine(recognizer.readBytes(), "w600k_r50 ArcFace")
+            swapperEngine = OnnxInferenceEngine(swapper.readBytes(), "INSwapper 128")
             swapProcessor = LiveSwapProcessor(
                 detector = detector!!,
                 embedder = ArcFaceEmbedder(embeddingEngine!!),
