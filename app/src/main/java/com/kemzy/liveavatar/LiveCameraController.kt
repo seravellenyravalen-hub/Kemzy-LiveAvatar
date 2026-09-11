@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -67,7 +68,12 @@ class LiveCameraController(
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
+                // Keep the preview independent from analysis resolution. The neural live
+                // path only needs a modest frame size, while full camera-resolution
+                // ImageProxy.toBitmap() can allocate a large ARGB buffer and exceed the
+                // ~128 MB heap on lower-memory Android devices.
                 val analysis = ImageAnalysis.Builder()
+                    .setTargetResolution(Size(640, 480))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also { it.setAnalyzer(cameraExecutor) { image -> faceTracker.process(image) } }
