@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var processingExecutor: ExecutorService
 
     private val framePipeline = FramePipeline(capacity = 1)
+    private val previewBitmap = BitmapOwnershipSlot()
     private val sourceFaces = SourceFaceRepository()
     private val sourceLoader by lazy { SourceFaceBitmapLoader(contentResolver) }
     private val modelRepository by lazy { ModelRepository(this) }
@@ -166,8 +167,14 @@ class MainActivity : ComponentActivity() {
                 val output = swapProcessor?.process(frame.bitmap, sourceBitmap)
                 val rendered = output?.frame
                 if (rendered != null && output.status == LiveSwapStatus.Swapped) {
-                    rtmpOutput?.submit(rendered)
-                    runOnUiThread { if (!isFinishing && !isDestroyed) processedPreview.setImageBitmap(rendered) }
+                    val streaming = rtmpOutput != null
+                    if (streaming) {
+                        val displayCopy = rendered.copy(Bitmap.Config.ARGB_8888, false)
+                        rtmpOutput?.submit(rendered)
+                        showProcessedPreview(displayCopy)
+                    } else {
+                        showProcessedPreview(rendered)
+                    }
                 } else if (output?.status == LiveSwapStatus.NoTargetFace) {
                     runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Live AI · face not detected" }
                 }
@@ -179,11 +186,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showProcessedPreview(frame: Bitmap) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) {
+                if (!frame.isRecycled) frame.recycle()
+                return@runOnUiThread
+            }
+            previewBitmap.replace(frame)
+            previewBitmap.withBitmap { processedPreview.setImageBitmap(it) }
+        }
+    }
+
     private fun stopProcessingOnly() {
         processing.set(false)
         framePipeline.clear()
         rtmpOutput?.close()
         rtmpOutput = null
+        runOnUiThread { previewBitmap.clear() }
         runCatching { embeddingEngine?.close() }
         runCatching { swapperEngine?.close() }
         embeddingEngine = null
@@ -226,6 +245,7 @@ class MainActivity : ComponentActivity() {
         stopCamera()
         cameraExecutor.shutdownNow()
         processingExecutor.shutdownNow()
+        previewBitmap.clear()
         sourceBitmap?.recycle()
         sourceBitmap = null
         super.onDestroy()
