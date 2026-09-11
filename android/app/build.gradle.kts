@@ -45,4 +45,5 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test:2.2.10")
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }
