@@ -27,11 +27,12 @@ class OnDeviceSwapRuntime(private val bundle: ModelBundle) : AutoCloseable {
         val recognizerFile = requireFile(bundle.recognizer, "w600k_r50.onnx")
         val swapperFile = requireFile(bundle.swapper, "inswapper_128.onnx")
 
-        // The current adapter API accepts model bytes. Load once and keep the
-        // sessions cached; callers must not rebuild this runtime per frame.
-        detector = ScrfdOnnxDetector(detectorFile.readBytes())
-        recognizer = ArcFaceOnnxRecognizer(recognizerFile.readBytes())
-        swapper = InSwapperOnnx(swapperFile.readBytes())
+        // IMPORTANT: keep model weights on disk. ONNX Runtime opens these files
+        // directly, avoiding the large Java-heap ByteArrays that previously made
+        // Live startup fail with a ~128 MB heap limit on low-memory phones.
+        detector = ScrfdOnnxDetector(detectorFile)
+        recognizer = ArcFaceOnnxRecognizer(recognizerFile)
+        swapper = InSwapperOnnx(swapperFile)
         return DeepLiveCamFrameProcessor(detector!!, recognizer!!, swapper!!)
     }
 
