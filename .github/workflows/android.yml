@@ -1,0 +1,39 @@
+name: Android
+
+on:
+  push:
+    branches:
+      - feature/live-ai-device-diagnostic
+  pull_request:
+    branches:
+      - feature/live-ai-device-diagnostic
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Run JVM tests
+        run: gradle test --no-daemon
