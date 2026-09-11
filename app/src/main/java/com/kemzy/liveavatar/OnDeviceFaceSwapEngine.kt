@@ -57,40 +57,67 @@ class OnDeviceFaceSwapEngine(
             val arcFace = FaceModelManifest.required.first { it.id == "arcface-embedder" }
             val swapper = FaceModelManifest.required.first { it.id == "face-swapper" }
             val emap = FaceModelManifest.required.first { it.id == "inswapper-emap" }
-            var lastSessionError: Throwable? = null
+            val activeProcessor = NeuralFaceSwapProcessor(appContext)
+            processor = activeProcessor
 
-            for (backend in InferenceBackendSelector.candidates(
-                apiLevel = Build.VERSION.SDK_INT,
-                nnapiAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1
-            )) {
-                closeSessions()
+            // Phase 1: load only ArcFace. The swapper is deliberately NOT loaded yet.
+            // On low-memory Android devices, keeping both heavyweight sessions alive
+            // crosses the app heap limit and produces the observed allocation/OOM error.
+            var embedderLoaded = false
+            var lastEmbedderError: Throwable? = null
+            for (backend in inferenceBackends()) {
+                closeEmbedderSession()
                 try {
                     embedderSession = factory.create(store.fileFor(arcFace).absolutePath, backend)
-                    swapperSession = factory.create(store.fileFor(swapper).absolutePath, backend)
-                    lastSessionError = null
+                    activeProcessor.attachEmbedderSession(embedderSession!!)
+                    embedderLoaded = true
+                    lastEmbedderError = null
                     break
                 } catch (error: Throwable) {
-                    lastSessionError = error
-                    closeSessions()
+                    lastEmbedderError = error
+                    closeEmbedderSession()
                 }
             }
 
-            if (embedderSession == null || swapperSession == null) {
-                val detail = lastSessionError?.message ?: "no compatible execution provider"
-                state = LiveFaceEngineState.Fallback("AI runtime could not load models: $detail")
+            if (!embedderLoaded) {
+                val detail = lastEmbedderError?.message ?: "no compatible execution provider"
+                state = LiveFaceEngineState.Fallback("AI runtime could not load ArcFace: $detail")
                 return state
             }
 
-            val activeProcessor = NeuralFaceSwapProcessor(appContext)
-            activeProcessor.attachSessions(embedderSession!!, swapperSession!!)
-            val error = activeProcessor.prepareAvatar(reference, store.fileFor(emap))
-            if (error != null) {
-                closeSessions()
-                state = LiveFaceEngineState.Fallback(error)
-            } else {
-                processor = activeProcessor
-                state = LiveFaceEngineState.Ready
+            val preparationError = activeProcessor.prepareAvatar(reference, store.fileFor(emap))
+            closeEmbedderSession()
+            if (preparationError != null) {
+                activeProcessor.clear()
+                state = LiveFaceEngineState.Fallback(preparationError)
+                return state
             }
+
+            // Phase 2: ArcFace is no longer needed. Only now load INSwapper.
+            var swapperLoaded = false
+            var lastSwapperError: Throwable? = null
+            for (backend in inferenceBackends()) {
+                closeSwapperSession()
+                try {
+                    swapperSession = factory.create(store.fileFor(swapper).absolutePath, backend)
+                    activeProcessor.attachSwapperSession(swapperSession!!)
+                    swapperLoaded = true
+                    lastSwapperError = null
+                    break
+                } catch (error: Throwable) {
+                    lastSwapperError = error
+                    closeSwapperSession()
+                }
+            }
+
+            if (!swapperLoaded) {
+                activeProcessor.clear()
+                val detail = lastSwapperError?.message ?: "no compatible execution provider"
+                state = LiveFaceEngineState.Fallback("AI runtime could not load face swapper: $detail")
+                return state
+            }
+
+            state = LiveFaceEngineState.Ready
             state
         } catch (error: Exception) {
             closeSessions()
@@ -98,6 +125,12 @@ class OnDeviceFaceSwapEngine(
             state
         }
     }
+
+    private fun inferenceBackends(): List<InferenceBackend> =
+        InferenceBackendSelector.candidates(
+            apiLevel = Build.VERSION.SDK_INT,
+            nnapiAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1
+        )
 
     private fun ensureRequiredModels(appContext: Context, store: ModelStore) {
         if (store.missingRequiredModels().isEmpty()) return
@@ -115,13 +148,23 @@ class OnDeviceFaceSwapEngine(
         lastError?.let { throw it }
     }
 
+    private fun closeEmbedderSession() {
+        processor?.detachEmbedderSession()
+        embedderSession?.close()
+        embedderSession = null
+    }
+
+    private fun closeSwapperSession() {
+        processor?.detachSwapperSession()
+        swapperSession?.close()
+        swapperSession = null
+    }
+
     private fun closeSessions() {
         processor?.clear()
+        closeEmbedderSession()
+        closeSwapperSession()
         processor = null
-        embedderSession?.close()
-        swapperSession?.close()
-        embedderSession = null
-        swapperSession = null
     }
 
     override fun processFrame(tracking: FaceTrackingResult): FaceSwapFrame =
