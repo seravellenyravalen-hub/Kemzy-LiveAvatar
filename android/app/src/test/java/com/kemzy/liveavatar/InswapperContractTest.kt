@@ -15,4 +15,9 @@ class InswapperContractTest {
         assertTrue(spec.modelNames.contains("inswapper_128.onnx"))
         assertTrue(spec.modelNames.contains("inswapper_128_fp16.onnx"))
     }
+
+    @Test
+    fun liveRecognizerUsesDownloadedW600kR50ModelName() {
+        assertEquals("w600k_r50.onnx", InswapperModelSpec.recognizerModelName)
+    }
 }
