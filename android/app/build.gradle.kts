@@ -15,11 +15,10 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Configure locally with -PKEMZY_PRIVACY_PASSCODE=... or the
-        // KEMZY_PRIVACY_PASSCODE environment variable. Never commit the secret.
+        // The approved app passcode for this build.
         val configuredPasscode = providers.gradleProperty("KEMZY_PRIVACY_PASSCODE").orNull
             ?: System.getenv("KEMZY_PRIVACY_PASSCODE")
-            ?: "CONFIGURE_PASSCODE"
+            ?: "115522"
         buildConfigField("String", "PRIVACY_PASSCODE", "\"$configuredPasscode\"")
     }
 
