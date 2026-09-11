@@ -38,9 +38,12 @@ jobs:
       - name: Run JVM tests and build debug APK
         run: gradle test assembleDebug --no-daemon
 
-      - name: Upload debug APK
+      - name: Rename branded APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/kemzyavatar.apk
+
+      - name: Upload branded APK
         uses: actions/upload-artifact@v4
         with:
-          name: kemzy-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: kemzyavatar-apk
+          path: android/app/build/outputs/apk/debug/kemzyavatar.apk
           if-no-files-found: error
