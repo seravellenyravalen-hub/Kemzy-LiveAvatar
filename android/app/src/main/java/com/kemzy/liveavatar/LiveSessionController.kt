@@ -19,18 +19,40 @@ class LiveSessionController(
     fun stop() = state.stopLive()
 }
 
+/** Owns exactly one processed bitmap and recycles it when replaced or cleared. */
+class BitmapOwnershipSlot {
+    private val lock = Any()
+    private var bitmap: Bitmap? = null
+
+    fun replace(next: Bitmap) {
+        synchronized(lock) {
+            val previous = bitmap
+            bitmap = next
+            if (previous != null && previous !== next && !previous.isRecycled) previous.recycle()
+        }
+    }
+
+    fun withBitmap(block: (Bitmap) -> Unit) {
+        synchronized(lock) { bitmap?.takeUnless { it.isRecycled }?.let(block) }
+    }
+
+    fun clear() {
+        synchronized(lock) {
+            bitmap?.let { if (!it.isRecycled) it.recycle() }
+            bitmap = null
+        }
+    }
+}
+
 /** VideoSource that publishes the latest processed Kemzy frame, never the raw camera. */
 class ProcessedBitmapSource : VideoSource() {
-    private val lock = Any()
-    private var latest: Bitmap? = null
+    private val frames = BitmapOwnershipSlot()
     private var surface: Surface? = null
     private var worker: Thread? = null
     @Volatile private var running = false
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-    fun submit(frame: Bitmap) {
-        synchronized(lock) { latest = frame }
-    }
+    fun submit(frame: Bitmap) = frames.replace(frame)
 
     override fun create(width: Int, height: Int, fps: Int, rotation: Int): Boolean =
         width > 0 && height > 0 && fps > 0
@@ -44,12 +66,12 @@ class ProcessedBitmapSource : VideoSource() {
             val intervalMs = max(1L, 1000L / fps)
             while (running) {
                 val started = System.currentTimeMillis()
-                synchronized(lock) {
+                frames.withBitmap { bitmap ->
                     try {
                         val canvas = surface?.lockCanvas(null)
                         if (canvas != null) {
                             canvas.drawColor(android.graphics.Color.BLACK)
-                            latest?.let { canvas.drawBitmap(it, null, canvas.clipBounds, paint) }
+                            canvas.drawBitmap(bitmap, null, canvas.clipBounds, paint)
                             surface?.unlockCanvasAndPost(canvas)
                         }
                     } catch (_: Throwable) { }
@@ -76,7 +98,7 @@ class ProcessedBitmapSource : VideoSource() {
 
     override fun release() {
         stop()
-        synchronized(lock) { latest = null }
+        frames.clear()
     }
 
     override fun isRunning(): Boolean = running
@@ -112,10 +134,13 @@ class RtmpLiveOutput(
     }
 
     fun stop() {
-        if (!isStreaming) return
+        if (!isStreaming) {
+            videoSource.release()
+            return
+        }
         isStreaming = false
         runCatching { stream.stopStream() }
-        videoSource.stop()
+        videoSource.release()
         onStatus("RTMP stopped")
     }
 
@@ -128,14 +153,17 @@ class RtmpLiveOutput(
     override fun onConnectionSuccess() = onStatus("RTMP connected")
     override fun onConnectionFailed(reason: String) {
         isStreaming = false
+        videoSource.release()
         onStatus("RTMP failed: $reason")
     }
     override fun onDisconnect() {
         isStreaming = false
+        videoSource.release()
         onStatus("RTMP disconnected")
     }
     override fun onAuthError() {
         isStreaming = false
+        videoSource.release()
         onStatus("RTMP authentication failed")
     }
     override fun onAuthSuccess() = onStatus("RTMP authentication accepted")
