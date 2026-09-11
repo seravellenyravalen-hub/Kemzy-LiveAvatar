@@ -6,10 +6,13 @@ import kotlin.test.assertEquals
 
 class FramePipelineTest {
     @Test
+    @Suppress("UNCHECKED_CAST")
     fun latestFrameWinsWhenConsumerFallsBehind() {
         val pipeline = FramePipeline(capacity = 1)
-        pipeline.offer(Frame(1, Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)))
-        pipeline.offer(Frame(2, Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)))
+        val first = null as Bitmap
+        val second = null as Bitmap
+        pipeline.offer(Frame(1, first))
+        pipeline.offer(Frame(2, second))
         assertEquals(2, pipeline.poll()?.id)
     }
 }
