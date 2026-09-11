@@ -128,8 +128,8 @@ class MainActivity : ComponentActivity() {
         runCatching {
             stopProcessingOnly()
             detector = MlKitFaceDetector()
-            embeddingEngine = OnnxInferenceEngine(recognizer.readBytes(), "w600k_r50 ArcFace")
-            swapperEngine = OnnxInferenceEngine(swapper.readBytes(), "INSwapper 128")
+            embeddingEngine = OnnxInferenceEngine.fromFile(recognizer, "w600k_r50 ArcFace")
+            swapperEngine = OnnxInferenceEngine.fromFile(swapper, "INSwapper 128")
             swapProcessor = LiveSwapProcessor(
                 detector = detector!!,
                 embedder = ArcFaceEmbedder(embeddingEngine!!),
