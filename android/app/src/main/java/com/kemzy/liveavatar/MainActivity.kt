@@ -47,18 +47,18 @@ class MainActivity : ComponentActivity() {
     private var embeddingEngine: OnnxInferenceEngine? = null
     private var swapperEngine: OnnxInferenceEngine? = null
     private var rtmpOutput: RtmpLiveOutput? = null
+    private var pendingModelName: String? = null
     private val processing = AtomicBoolean(false)
 
     private val lockLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result -> if (result.resultCode != RESULT_OK) finish() }
 
-    private val sourcePicker = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
+    private val sourcePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@registerForActivityResult
         runCatching {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            sourceBitmap?.recycle()
             sourceBitmap = sourceLoader.load(uri)
             sourceFaces.select(uri.toString())
             liveState.selectSource(uri.toString())
@@ -67,9 +67,20 @@ class MainActivity : ComponentActivity() {
         }.onFailure { error -> status.text = "Source error: ${error.message ?: "unable to load image"}" }
     }
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
+    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri ?: return@registerForActivityResult
+        val name = pendingModelName ?: return@registerForActivityResult
+        runCatching {
+            modelRepository.importModel(contentResolver, uri, name)
+            status.text = "$name imported · ready for Live"
+        }.onFailure { error ->
+            status.text = "Model import failed: ${error.message ?: "unable to import model"}"
+        } finally {
+            pendingModelName = null
+        }
+    }
+
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else status.text = "Camera permission is required for Live mode."
     }
 
@@ -89,6 +100,14 @@ class MainActivity : ComponentActivity() {
         findViewById<Button>(R.id.selectSourceButton).setOnClickListener {
             sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp"))
         }
+        findViewById<Button>(R.id.importArcFaceButton).setOnClickListener {
+            pendingModelName = "arcface_112.onnx"
+            modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
+        }
+        findViewById<Button>(R.id.importInswapperButton).setOnClickListener {
+            pendingModelName = "inswapper_128_fp16.onnx"
+            modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
+        }
         liveButton.setOnClickListener { startLive() }
         stopButton.setOnClickListener { stopLive() }
     }
@@ -101,7 +120,7 @@ class MainActivity : ComponentActivity() {
         val recognizer = modelRepository.model("arcface_112.onnx")
         val swapper = modelRepository.installedModels().firstOrNull { it.name in InswapperModelSpec.modelNames }
         if (recognizer == null || swapper == null) {
-            status.text = "AI models missing · add arcface_112.onnx and inswapper_128_fp16.onnx to Kemzy models"
+            status.text = "AI models missing · import ArcFace and INSwapper first"
             return
         }
 
