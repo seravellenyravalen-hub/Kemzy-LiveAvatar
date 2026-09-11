@@ -1,16 +1,12 @@
 package com.kemzy.liveavatar
 
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * CameraX adapter for the bounded live pipeline.
- *
- * The bitmap conversion happens while the ImageProxy is still open. CameraX provides
- * ImageProxy.toBitmap() for YUV_420_888/JPEG/RGBA_8888 analysis frames. The converted
- * bitmap is then owned by the FramePipeline and the proxy is always closed promptly.
- */
+/** CameraX adapter for the bounded live pipeline. */
 class LiveFrameAnalyzer(
     private val pipeline: FramePipeline,
     private val onFrameAccepted: () -> Unit = {},
@@ -27,7 +23,9 @@ class LiveFrameAnalyzer(
         }
 
         try {
-            val bitmap = image.toBitmap()
+            val raw = image.toBitmap()
+            val bitmap = rotateForDisplay(raw, image.imageInfo.rotationDegrees)
+            if (bitmap !== raw) raw.recycle()
             pipeline.offer(Frame(image.imageInfo.timestamp, bitmap))
             onFrameAccepted()
         } catch (error: Throwable) {
@@ -36,5 +34,20 @@ class LiveFrameAnalyzer(
             image.close()
             processing.set(false)
         }
+    }
+
+    private fun rotateForDisplay(bitmap: Bitmap, degrees: Int): Bitmap {
+        val normalized = ((degrees % 360) + 360) % 360
+        if (normalized == 0) return bitmap
+        val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
+        return Bitmap.createBitmap(
+            bitmap,
+            0,
+            0,
+            bitmap.width,
+            bitmap.height,
+            matrix,
+            true
+        )
     }
 }
