@@ -37,7 +37,6 @@ interface FaceDetector {
     fun detect(frame: Bitmap): FaceGeometry?
 }
 
-/** Real on-device detector using the bundled ML Kit face detector. */
 class MlKitFaceDetector : FaceDetector, AutoCloseable {
     private val detector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
@@ -48,11 +47,7 @@ class MlKitFaceDetector : FaceDetector, AutoCloseable {
     )
 
     override fun detect(frame: Bitmap): FaceGeometry? {
-        val faces = Tasks.await(
-            detector.process(InputImage.fromBitmap(frame, 0)),
-            500L,
-            TimeUnit.MILLISECONDS
-        )
+        val faces = Tasks.await(detector.process(InputImage.fromBitmap(frame, 0)), 500L, TimeUnit.MILLISECONDS)
         val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() } ?: return null
         val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position ?: return null
         val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position ?: return null
@@ -61,10 +56,8 @@ class MlKitFaceDetector : FaceDetector, AutoCloseable {
         val rightMouth = face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position ?: return null
         return FaceGeometry(
             FaceLandmarks(
-                Point2(leftEye.x, leftEye.y),
-                Point2(rightEye.x, rightEye.y),
-                Point2(nose.x, nose.y),
-                Point2(leftMouth.x, leftMouth.y),
+                Point2(leftEye.x, leftEye.y), Point2(rightEye.x, rightEye.y),
+                Point2(nose.x, nose.y), Point2(leftMouth.x, leftMouth.y),
                 Point2(rightMouth.x, rightMouth.y)
             ),
             RectF(face.boundingBox)
@@ -82,9 +75,7 @@ interface FaceSwapper {
     fun swap(alignedTargetFace: Bitmap, sourceEmbedding: FloatArray): Bitmap
 }
 
-class FaceCompositor(
-    private val outputSize: Int = InswapperModelSpec.faceWidth
-) {
+class FaceCompositor(private val outputSize: Int = InswapperModelSpec.faceWidth) {
     fun composite(frame: Bitmap, swappedFace: Bitmap, geometry: FaceGeometry): Bitmap {
         require(swappedFace.width == outputSize && swappedFace.height == outputSize) {
             "Swapper output must be ${outputSize}x${outputSize}."
@@ -94,58 +85,31 @@ class FaceCompositor(
         canvas.save()
         canvas.concat(targetMatrix(geometry, outputSize))
         val mask = RectF(5f, 5f, outputSize - 5f, outputSize - 5f)
-        canvas.clipPath(android.graphics.Path().apply {
-            addOval(mask, android.graphics.Path.Direction.CW)
-        })
-        canvas.drawBitmap(
-            swappedFace,
-            0f,
-            0f,
-            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        )
+        canvas.clipPath(android.graphics.Path().apply { addOval(mask, android.graphics.Path.Direction.CW) })
+        canvas.drawBitmap(swappedFace, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
         canvas.restore()
         return result
     }
 
     private fun targetMatrix(geometry: FaceGeometry, size: Int): Matrix {
-        val source = landmarks(geometry.landmarks)
-        val canonical = canonicalLandmarks(size)
-        return Matrix().also {
-            check(it.setPolyToPoly(canonical, 0, source, 0, 4)) {
-                "Unable to map the aligned face back to the camera frame."
-            }
-        }
-    }
-
-    private fun landmarks(l: FaceLandmarks) = floatArrayOf(
-        l.leftEye.x, l.leftEye.y,
-        l.rightEye.x, l.rightEye.y,
-        l.nose.x, l.nose.y,
-        l.leftMouth.x, l.leftMouth.y
-    )
-
-    private fun canonicalLandmarks(size: Int): FloatArray {
+        val l = geometry.landmarks
+        val source = floatArrayOf(l.leftEye.x, l.leftEye.y, l.rightEye.x, l.rightEye.y, l.nose.x, l.nose.y, l.leftMouth.x, l.leftMouth.y)
         val scale = size / 112f
-        return floatArrayOf(
+        val canonical = floatArrayOf(
             38.2946f * scale, 51.6963f * scale,
             73.5318f * scale, 51.5014f * scale,
             56.0252f * scale, 71.7366f * scale,
             41.5493f * scale, 92.3655f * scale
         )
+        return Matrix().also {
+            check(it.setPolyToPoly(canonical, 0, source, 0, 4)) { "Unable to map the aligned face back to the camera frame." }
+        }
     }
 }
 
-enum class LiveSwapStatus {
-    Swapped,
-    NoSourceFace,
-    NoTargetFace,
-    ModelUnavailable
-}
+enum class LiveSwapStatus { Swapped, NoSourceFace, NoTargetFace, ModelUnavailable }
 
-data class LiveSwapOutput(
-    val status: LiveSwapStatus,
-    val frame: Bitmap? = null
-)
+data class LiveSwapOutput(val status: LiveSwapStatus, val frame: Bitmap? = null)
 
 class LiveSwapProcessor(
     private val detector: FaceDetector,
@@ -153,17 +117,35 @@ class LiveSwapProcessor(
     private val swapper: FaceSwapper,
     private val compositor: FaceCompositor
 ) {
-    fun process(frame: Bitmap?, sourceFace: Bitmap?): LiveSwapOutput {
-        if (frame == null || sourceFace == null) return LiveSwapOutput(LiveSwapStatus.NoSourceFace)
-        val target = detector.detect(frame) ?: return LiveSwapOutput(LiveSwapStatus.NoTargetFace)
-        val sourceGeometry = detector.detect(sourceFace) ?: return LiveSwapOutput(LiveSwapStatus.NoSourceFace)
-        val alignedSource = FaceAlignment.align(sourceFace, sourceGeometry, 112)
-        val alignedTarget = FaceAlignment.align(frame, target, InswapperModelSpec.faceWidth)
+    private var preparedSource: Bitmap? = null
+    private var preparedEmbedding: FloatArray? = null
+
+    /** Detects and embeds the selected source exactly once until the source bitmap changes. */
+    fun prepareSource(sourceFace: Bitmap?): LiveSwapStatus {
+        if (sourceFace == null) {
+            preparedSource = null
+            preparedEmbedding = null
+            return LiveSwapStatus.NoSourceFace
+        }
+        if (preparedSource === sourceFace && preparedEmbedding != null) return LiveSwapStatus.Swapped
+        val geometry = detector.detect(sourceFace) ?: return LiveSwapStatus.NoSourceFace
+        val alignedSource = FaceAlignment.align(sourceFace, geometry, 112)
         val embedding = embedder.embedding(alignedSource)
         require(embedding.size == InswapperModelSpec.sourceEmbeddingSize) {
             "Expected a 512-value source embedding, got ${embedding.size}."
         }
-        val swapped = swapper.swap(alignedTarget, embedding)
+        preparedSource = sourceFace
+        preparedEmbedding = embedding
+        return LiveSwapStatus.Swapped
+    }
+
+    fun process(frame: Bitmap?, sourceFace: Bitmap?): LiveSwapOutput {
+        if (frame == null || sourceFace == null) return LiveSwapOutput(LiveSwapStatus.NoSourceFace)
+        val sourceStatus = prepareSource(sourceFace)
+        if (sourceStatus != LiveSwapStatus.Swapped) return LiveSwapOutput(sourceStatus)
+        val target = detector.detect(frame) ?: return LiveSwapOutput(LiveSwapStatus.NoTargetFace)
+        val alignedTarget = FaceAlignment.align(frame, target, InswapperModelSpec.faceWidth)
+        val swapped = swapper.swap(alignedTarget, preparedEmbedding!!)
         return LiveSwapOutput(LiveSwapStatus.Swapped, compositor.composite(frame, swapped, target))
     }
 }
@@ -171,12 +153,7 @@ class LiveSwapProcessor(
 object FaceAlignment {
     fun align(frame: Bitmap, geometry: FaceGeometry, size: Int = InswapperModelSpec.faceWidth): Bitmap {
         val l = geometry.landmarks
-        val source = floatArrayOf(
-            l.leftEye.x, l.leftEye.y,
-            l.rightEye.x, l.rightEye.y,
-            l.nose.x, l.nose.y,
-            l.leftMouth.x, l.leftMouth.y
-        )
+        val source = floatArrayOf(l.leftEye.x, l.leftEye.y, l.rightEye.x, l.rightEye.y, l.nose.x, l.nose.y, l.leftMouth.x, l.leftMouth.y)
         val target = floatArrayOf(
             38.2946f * size / 112f, 51.6963f * size / 112f,
             73.5318f * size / 112f, 51.5014f * size / 112f,
@@ -184,30 +161,16 @@ object FaceAlignment {
             41.5493f * size / 112f, 92.3655f * size / 112f
         )
         val matrix = Matrix()
-        check(matrix.setPolyToPoly(source, 0, target, 0, 4)) {
-            "Unable to align the detected face."
-        }
+        check(matrix.setPolyToPoly(source, 0, target, 0, 4)) { "Unable to align the detected face." }
         return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also { output ->
-            Canvas(output).drawBitmap(
-                frame,
-                matrix,
-                Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-            )
+            Canvas(output).drawBitmap(frame, matrix, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
         }
     }
 }
 
-object UnavailableFaceDetector : FaceDetector {
-    override fun detect(frame: Bitmap): FaceGeometry? = null
-}
-
-object UnavailableFaceEmbedder : FaceEmbedder {
-    override fun embedding(alignedSourceFace: Bitmap): FloatArray = error("No face embedding model has been installed.")
-}
-
-object UnavailableFaceSwapper : FaceSwapper {
-    override fun swap(alignedTargetFace: Bitmap, sourceEmbedding: FloatArray): Bitmap = error("No INSwapper model has been installed.")
-}
+object UnavailableFaceDetector : FaceDetector { override fun detect(frame: Bitmap): FaceGeometry? = null }
+object UnavailableFaceEmbedder : FaceEmbedder { override fun embedding(alignedSourceFace: Bitmap): FloatArray = error("No face embedding model has been installed.") }
+object UnavailableFaceSwapper : FaceSwapper { override fun swap(alignedTargetFace: Bitmap, sourceEmbedding: FloatArray): Bitmap = error("No INSwapper model has been installed.") }
 
 class InswapperInputContract(
     val faceWidth: Int = InswapperModelSpec.faceWidth,
