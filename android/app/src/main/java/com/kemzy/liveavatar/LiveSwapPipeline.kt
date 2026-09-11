@@ -107,19 +107,23 @@ class LiveSwapProcessor(
 
     fun process(frame: Bitmap?, sourceFace: Bitmap?): LiveSwapOutput {
         if (frame == null || sourceFace == null) return LiveSwapOutput(LiveSwapStatus.NoSourceFace)
-        val sourceStatus = prepareSource(sourceFace)
-        if (sourceStatus != LiveSwapStatus.Swapped) return LiveSwapOutput(sourceStatus)
-        val target = detector.detect(frame) ?: return LiveSwapOutput(LiveSwapStatus.NoTargetFace)
-        val alignedTarget = FaceAlignment.align(frame, target, InswapperModelSpec.faceWidth)
-        return try {
-            val swapped = swapper.swap(alignedTarget, preparedEmbedding!!)
-            try {
-                LiveSwapOutput(LiveSwapStatus.Swapped, compositor.composite(frame, swapped, target))
+        try {
+            val sourceStatus = prepareSource(sourceFace)
+            if (sourceStatus != LiveSwapStatus.Swapped) return LiveSwapOutput(sourceStatus)
+            val target = detector.detect(frame) ?: return LiveSwapOutput(LiveSwapStatus.NoTargetFace)
+            val alignedTarget = FaceAlignment.align(frame, target, InswapperModelSpec.faceWidth)
+            return try {
+                val swapped = swapper.swap(alignedTarget, preparedEmbedding!!)
+                try {
+                    LiveSwapOutput(LiveSwapStatus.Swapped, compositor.composite(frame, swapped, target))
+                } finally {
+                    if (!swapped.isRecycled) swapped.recycle()
+                }
             } finally {
-                if (!swapped.isRecycled) swapped.recycle()
+                if (!alignedTarget.isRecycled) alignedTarget.recycle()
             }
         } finally {
-            if (!alignedTarget.isRecycled) alignedTarget.recycle()
+            if (frame !== sourceFace && !frame.isRecycled) frame.recycle()
         }
     }
 }
