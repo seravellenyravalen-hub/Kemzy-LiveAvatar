@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/live-ai-device-diagnostic
+      - fix/kemzy-286-oom-preserve-apk
   pull_request:
     branches:
       - feature/live-ai-device-diagnostic
