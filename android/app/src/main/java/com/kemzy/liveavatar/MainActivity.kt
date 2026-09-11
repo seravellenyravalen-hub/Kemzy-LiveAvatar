@@ -70,10 +70,10 @@ class MainActivity : ComponentActivity() {
     private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@registerForActivityResult
         val name = pendingModelName ?: return@registerForActivityResult
-        runCatching {
+        try {
             modelRepository.importModel(contentResolver, uri, name)
             status.text = "$name imported · ready for Live"
-        }.onFailure { error ->
+        } catch (error: Throwable) {
             status.text = "Model import failed: ${error.message ?: "unable to import model"}"
         } finally {
             pendingModelName = null
