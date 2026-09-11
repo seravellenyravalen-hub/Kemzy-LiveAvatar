@@ -13,6 +13,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -21,6 +22,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var cameraExecutor: ExecutorService
     private val framePipeline = FramePipeline(capacity = 1)
+    private val modelRepository by lazy { ModelRepository(this) }
+    private var liveInferenceEngine: InferenceEngine? = null
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
 
     private val lockLauncher = registerForActivityResult(
@@ -70,6 +73,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCamera() {
+        if (!prepareLiveInference()) return
+
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             if (isFinishing || isDestroyed || appLock.isLocked()) return@addListener
@@ -119,8 +124,34 @@ class MainActivity : ComponentActivity() {
                 preview,
                 analysis
             )
-            status.text = "Live camera ready"
+            status.text = "Live camera ready · model ${liveInferenceEngine?.modelName() ?: "not loaded"}"
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    /**
+     * Opens the installed ONNX graph directly from its file path. Do not call
+     * readBytes() here: the model can be larger than the app's managed heap.
+     */
+    private fun prepareLiveInference(): Boolean {
+        val modelFile: File = modelRepository.installedModels().firstOrNull()
+            ?: run {
+                liveInferenceEngine?.close()
+                liveInferenceEngine = null
+                status.text = "Live camera available · import a compatible .onnx model first"
+                return true
+            }
+
+        if (liveInferenceEngine?.modelName() == modelFile.name) return true
+
+        liveInferenceEngine?.close()
+        return try {
+            liveInferenceEngine = OnnxInferenceEngine(modelFile, modelFile.name)
+            true
+        } catch (error: Throwable) {
+            liveInferenceEngine = null
+            status.text = "Model load failed: ${error.message ?: "unsupported ONNX model"}"
+            false
+        }
     }
 
     private fun stopCamera() {
@@ -128,5 +159,7 @@ class MainActivity : ComponentActivity() {
             ProcessCameraProvider.getInstance(this).get().unbindAll()
         }
         framePipeline.clear()
+        liveInferenceEngine?.close()
+        liveInferenceEngine = null
     }
 }
