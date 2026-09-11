@@ -5,10 +5,15 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtException
 import ai.onnxruntime.OrtSession
 import java.io.Closeable
+import java.io.File
 
 /**
- * Safe inference boundary for Android. Automatically allocated outputs are
- * copied out of ONNX Runtime's native result scope before that scope closes.
+ * Safe inference boundary for Android.
+ *
+ * Models are opened directly from their app-private .onnx file path. This is
+ * intentional: reading the complete model into a ByteArray first duplicates
+ * the model in the managed heap and can hit Android's heap growth limit before
+ * ONNX Runtime gets a chance to map/use the model.
  */
 interface InferenceEngine : Closeable {
     fun modelName(): String
@@ -18,14 +23,21 @@ interface InferenceEngine : Closeable {
 }
 
 class OnnxInferenceEngine(
-    private val modelBytes: ByteArray,
-    private val name: String = "ONNX Runtime model"
+    private val modelFile: File,
+    private val name: String = modelFile.name
 ) : InferenceEngine {
     private val environment = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = environment.createSession(
-        modelBytes,
-        OrtSession.SessionOptions()
-    )
+    private val session: OrtSession = createSession(modelFile)
+
+    private fun createSession(file: File): OrtSession {
+        require(file.isFile) { "ONNX model file does not exist: ${file.absolutePath}" }
+        require(file.length() > 0L) { "ONNX model file is empty: ${file.absolutePath}" }
+
+        return environment.createSession(
+            file.absolutePath,
+            OrtSession.SessionOptions()
+        )
+    }
 
     override fun modelName(): String = name
 
