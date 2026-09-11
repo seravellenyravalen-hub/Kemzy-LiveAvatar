@@ -4,20 +4,22 @@ import android.graphics.Bitmap
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
 /**
- * Minimal Android-side adapters for the same model contracts used by the
- * Deep-Live-Cam/InsightFace family. The actual ONNX weights are user supplied.
+ * Android-side adapters for the Deep-Live-Cam/InsightFace model family.
+ * ONNX sessions are created from installed model files rather than ByteArrays,
+ * preventing large model weights from consuming the Java heap during Live start.
  */
 class ArcFaceOnnxRecognizer(
-    modelBytes: ByteArray,
+    modelFile: File,
     private val inputName: String? = null,
     private val outputName: String? = null
 ) : FaceRecognizer, AutoCloseable {
     private val environment = OrtEnvironment.getEnvironment()
-    private val session = environment.createSession(modelBytes, OrtSession.SessionOptions())
+    private val session = createSession(modelFile)
     private val resolvedInput = inputName ?: session.inputNames.first()
     private val resolvedOutput = outputName ?: session.outputNames.first()
 
@@ -54,16 +56,23 @@ class ArcFaceOnnxRecognizer(
     }
 
     override fun close() = session.close()
+
+    private fun createSession(modelFile: File): OrtSession {
+        require(modelFile.isFile && modelFile.length() > 0) {
+            "ArcFace model is missing or empty: ${modelFile.absolutePath}"
+        }
+        return environment.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
+    }
 }
 
 class InSwapperOnnx(
-    modelBytes: ByteArray,
+    modelFile: File,
     private val imageInputName: String? = null,
     private val embeddingInputName: String? = null,
     private val outputName: String? = null
 ) : FaceSwapper, AutoCloseable {
     private val environment = OrtEnvironment.getEnvironment()
-    private val session = environment.createSession(modelBytes, OrtSession.SessionOptions())
+    private val session = createSession(modelFile)
     private val inputs = session.inputNames.toList()
     private val outputs = session.outputNames.toList()
 
@@ -118,6 +127,13 @@ class InSwapperOnnx(
     }
 
     override fun close() = session.close()
+
+    private fun createSession(modelFile: File): OrtSession {
+        require(modelFile.isFile && modelFile.length() > 0) {
+            "INSwapper model is missing or empty: ${modelFile.absolutePath}"
+        }
+        return environment.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
+    }
 }
 
 private fun flattenFloats(value: Any): FloatArray = when (value) {
