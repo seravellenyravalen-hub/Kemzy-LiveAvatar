@@ -33,7 +33,7 @@ class LiveSwapPipelineContractTest {
     }
 
     @Test
-    fun liveProcessorDoesNotProcessWithoutSourceEmbedding() {
+    fun liveProcessorDoesNotProcessWithoutSourceFace() {
         val processor = LiveSwapProcessor(
             detector = UnavailableFaceDetector,
             embedder = UnavailableFaceEmbedder,
@@ -43,6 +43,7 @@ class LiveSwapPipelineContractTest {
 
         val result = processor.process(null, null)
 
-        assertEquals(LiveSwapResult.NoSourceFace, result)
+        assertEquals(LiveSwapStatus.NoSourceFace, result.status)
+        assertEquals(null, result.frame)
     }
 }
