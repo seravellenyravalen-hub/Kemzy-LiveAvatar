@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var status: TextView
     private lateinit var cameraExecutor: ExecutorService
-    private val framePipeline = FramePipeline(capacity = 1)
+    private val framePipeline = FramePipeline<Frame>(capacity = 1)
     private val modelRepository by lazy { ModelRepository(this) }
     private var liveInferenceEngine: InferenceEngine? = null
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
