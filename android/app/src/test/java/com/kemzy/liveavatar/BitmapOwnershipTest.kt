@@ -1,11 +1,10 @@
 package com.kemzy.liveavatar
 
 import android.graphics.Bitmap
-import androidx.test.core.app.ApplicationProvider
 import kotlin.test.Test
 import kotlin.test.assertTrue
-import org.robolectric.RobolectricTestRunner
 import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class BitmapOwnershipTest {
