@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * bitmap is then owned by the FramePipeline and the proxy is always closed promptly.
  */
 class LiveFrameAnalyzer(
-    private val pipeline: FramePipeline,
+    private val pipeline: FramePipeline<Frame>,
     private val onFrameAccepted: () -> Unit = {},
     private val onFrameDropped: () -> Unit = {},
     private val onFrameError: (Throwable) -> Unit = {}
