@@ -6,6 +6,7 @@ on:
       - main
       - 'feature/**'
       - 'fix/**'
+      - 'artifact/**'
   pull_request:
     paths:
       - 'android/**'
@@ -38,3 +39,10 @@ jobs:
 
       - name: Debug APK build
         run: gradle --no-daemon :app:assembleDebug
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kemzy-LiveAvatar-ci296-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
