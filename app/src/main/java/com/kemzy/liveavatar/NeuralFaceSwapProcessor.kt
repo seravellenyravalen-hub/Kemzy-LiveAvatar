@@ -21,8 +21,11 @@ import kotlin.math.max
 
 /**
  * Local ArcFace -> EMAP -> INSwapper pipeline.
- * The selected reference is prepared once; every camera frame is transformed from
- * the live tracked face. The network is never consulted during frame processing.
+ *
+ * The Android heap is intentionally kept bounded: the ArcFace session is used only
+ * while preparing the selected avatar and is released before the much larger
+ * INSwapper session is created. Only the session needed for live frame inference
+ * remains resident during Live mode.
  */
 class NeuralFaceSwapProcessor(
     private val context: Context,
@@ -32,9 +35,22 @@ class NeuralFaceSwapProcessor(
     private var swapper: OrtSession? = null
     private var sourceLatent: FloatArray? = null
 
-    fun attachSessions(embedderSession: OrtSession, swapperSession: OrtSession) {
-        embedder = embedderSession
-        swapper = swapperSession
+    fun attachEmbedderSession(session: OrtSession) {
+        embedder?.close()
+        embedder = session
+    }
+
+    fun attachSwapperSession(session: OrtSession) {
+        swapper?.close()
+        swapper = session
+    }
+
+    fun detachEmbedderSession() {
+        embedder = null
+    }
+
+    fun detachSwapperSession() {
+        swapper = null
     }
 
     fun prepareAvatar(uri: String, emapFile: java.io.File): String? {
@@ -211,10 +227,29 @@ class NeuralFaceSwapProcessor(
 
     private fun loadEMap(file: java.io.File, inputDimension: Int, outputDimension: Int): FloatArray {
         val expected = inputDimension * outputDimension
-        val bytes = file.readBytes()
-        require(bytes.size >= expected * 4) { "EMAP is too small" }
+        require(file.length() >= expected.toLong() * 4L) { "EMAP is too small" }
         val floats = FloatArray(expected)
-        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(floats)
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            val byteBuffer = ByteBuffer.allocate(64 * 1024).order(ByteOrder.LITTLE_ENDIAN)
+            var offset = 0
+            var carry = 0
+            while (offset < expected) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                byteBuffer.clear()
+                byteBuffer.put(buffer, 0, read)
+                byteBuffer.flip()
+                val floatCount = minOf(byteBuffer.remaining() / 4, expected - offset)
+                for (i in 0 until floatCount) floats[offset + i] = byteBuffer.float
+                offset += floatCount
+                carry = read - floatCount * 4
+                if (carry != 0) {
+                    throw IllegalStateException("EMAP is not 4-byte aligned")
+                }
+            }
+            require(offset == expected) { "EMAP data is incomplete" }
+        }
         return floats
     }
 
