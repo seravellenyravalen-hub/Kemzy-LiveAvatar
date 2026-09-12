@@ -36,9 +36,27 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:padding="8dp"
-            android:text="Source face: none"
+            android:text="Source portrait: none"
             android:textColor="@android:color/white"
             android:background="#77000000" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+            <Button
+                android:id="@+id/selectSourceButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SELECT PORTRAIT" />
+            <Button
+                android:id="@+id/importLiaButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="IMPORT LIA" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -82,15 +100,9 @@
             android:layout_marginTop="6dp"
             android:orientation="horizontal">
             <Button
-                android:id="@+id/selectSourceButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="SELECT SOURCE" />
-            <Button
                 android:id="@+id/liveButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
                 android:text="LIVE" />
             <Button
                 android:id="@+id/stopButton"
