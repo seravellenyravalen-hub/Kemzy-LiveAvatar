@@ -128,8 +128,10 @@ class MainActivity : ComponentActivity() {
         runCatching {
             stopProcessingOnly()
             detector = MlKitFaceDetector()
-            embeddingEngine = OnnxInferenceEngine(recognizer.readBytes(), "w600k_r50 ArcFace")
-            swapperEngine = OnnxInferenceEngine(swapper.readBytes(), "INSwapper 128")
+            // Keep large ONNX weights on disk. ONNX Runtime opens these paths
+            // directly, avoiding readBytes() Java-heap copies on Live startup.
+            embeddingEngine = OnnxInferenceEngine(recognizer, "w600k_r50 ArcFace")
+            swapperEngine = OnnxInferenceEngine(swapper, "INSwapper 128")
             swapProcessor = LiveSwapProcessor(
                 detector = detector!!,
                 embedder = ArcFaceEmbedder(embeddingEngine!!),
