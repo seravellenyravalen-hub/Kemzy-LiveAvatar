@@ -38,17 +38,20 @@ jobs:
       - name: Run JVM tests and build debug APK
         run: gradle test assembleDebug --no-daemon
 
-      - name: Rename branded APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/kemzyavatar.apk
+      - name: Rename final branded APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk 'app/build/outputs/apk/debug/Kémzyavatarstudio.apk'
 
       - name: Generate APK SHA-256
-        run: sha256sum app/build/outputs/apk/debug/kemzyavatar.apk > app/build/outputs/apk/debug/kemzyavatar.apk.sha256
+        run: sha256sum 'app/build/outputs/apk/debug/Kémzyavatarstudio.apk' > 'app/build/outputs/apk/debug/Kémzyavatarstudio.apk.sha256'
 
-      - name: Upload branded APK and checksum
+      - name: Verify final APK exists
+        run: test -s 'app/build/outputs/apk/debug/Kémzyavatarstudio.apk' && test -s 'app/build/outputs/apk/debug/Kémzyavatarstudio.apk.sha256'
+
+      - name: Upload final APK and checksum
         uses: actions/upload-artifact@v4
         with:
           name: kemzyavatar-apk
           path: |
-            android/app/build/outputs/apk/debug/kemzyavatar.apk
-            android/app/build/outputs/apk/debug/kemzyavatar.apk.sha256
+            android/app/build/outputs/apk/debug/Kémzyavatarstudio.apk
+            android/app/build/outputs/apk/debug/Kémzyavatarstudio.apk.sha256
           if-no-files-found: error
