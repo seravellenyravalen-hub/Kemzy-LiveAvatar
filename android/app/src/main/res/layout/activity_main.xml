@@ -56,6 +56,12 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="6dp"
                 android:text="IMPORT INSWAPPER" />
+            <Button
+                android:id="@+id/importEmapButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="IMPORT EMAP" />
         </LinearLayout>
 
         <EditText
