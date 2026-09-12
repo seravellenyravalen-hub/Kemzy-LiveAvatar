@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.Closeable
 import java.io.File
+import java.nio.FloatBuffer
 
 class LiaPortraitAnimator(
     modelFile: File,
@@ -13,21 +14,15 @@ class LiaPortraitAnimator(
 ) : Closeable {
     private val contract = LiaModelContract()
     private val environment = OrtEnvironment.getEnvironment()
-    private val session = environment.createSession(
-        modelFile.absolutePath,
-        OrtSession.SessionOptions()
-    )
-
+    private val session = environment.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
     private var driverStartMotion: FloatArray? = null
     private var preparedSource: FloatArray? = null
 
     init {
-        require(modelFile.isFile && modelFile.length() > 0L) {
-            "LIA generator model is missing or empty: ${modelFile.absolutePath}"
+        require(modelFile.isFile && modelFile.length() > 0L) { "LIA generator model is missing or empty: ${modelFile.absolutePath}" }
+        require(session.inputNames.containsAll(setOf(contract.sourceInput, contract.driverInput, contract.startMotionInput, contract.powerInput))) {
+            "LIA generator inputs do not match the expected DeepFaceLive contract."
         }
-        require(session.inputNames.containsAll(
-            setOf(contract.sourceInput, contract.driverInput, contract.startMotionInput, contract.powerInput)
-        )) { "LIA generator inputs do not match the expected DeepFaceLive contract." }
         require(session.outputNames.containsAll(setOf(contract.motionOutput, contract.imageOutput))) {
             "LIA generator outputs do not match the expected DeepFaceLive contract."
         }
@@ -42,7 +37,6 @@ class LiaPortraitAnimator(
         val source = preparedSource ?: error("LIA source portrait has not been prepared.")
         val driverTensor = LiaTensor.image(driver)
         val startMotion = driverStartMotion ?: extractMotion(driverTensor).also { driverStartMotion = it }
-
         val inputs = linkedMapOf<String, OnnxTensor>()
         try {
             inputs[contract.sourceInput] = tensor(source, longArrayOf(1, 3, 256, 256))
@@ -50,8 +44,7 @@ class LiaPortraitAnimator(
             inputs[contract.startMotionInput] = tensor(startMotion, longArrayOf(1, contract.startMotionSize.toLong()))
             inputs[contract.powerInput] = tensor(floatArrayOf(power), longArrayOf(1))
             session.run(inputs).use { results ->
-                val value = results[contract.imageOutput].value as Array<*>? ?: error("LIA returned no image.")
-                return LiaTensor.toBitmap(value)
+                return LiaTensor.toBitmap(outputValue(results, contract.imageOutput))
             }
         } finally {
             inputs.values.forEach { it.close() }
@@ -61,16 +54,15 @@ class LiaPortraitAnimator(
     private fun extractMotion(driver: FloatArray): FloatArray {
         val inputs = linkedMapOf<String, OnnxTensor>()
         try {
-            inputs[contract.sourceInput] = tensor(FloatArray(1 * 3 * 256 * 256), longArrayOf(1, 3, 256, 256))
+            inputs[contract.sourceInput] = tensor(FloatArray(3 * 256 * 256), longArrayOf(1, 3, 256, 256))
             inputs[contract.driverInput] = tensor(driver, longArrayOf(1, 3, 256, 256))
             inputs[contract.startMotionInput] = tensor(FloatArray(contract.startMotionSize), longArrayOf(1, contract.startMotionSize.toLong()))
             inputs[contract.powerInput] = tensor(floatArrayOf(0f), longArrayOf(1))
             session.run(inputs).use { results ->
-                val raw = results[contract.motionOutput].value
-                return when (raw) {
+                return when (val raw = outputValue(results, contract.motionOutput)) {
                     is FloatArray -> raw.copyOf()
                     is Array<*> -> flattenFloatArray(raw)
-                    else -> error("Unexpected LIA motion output type: ${raw?.javaClass}")
+                    else -> error("Unexpected LIA motion output type: ${raw?.let { it::class.java }}")
                 }
             }
         } finally {
@@ -78,8 +70,14 @@ class LiaPortraitAnimator(
         }
     }
 
+    private fun outputValue(results: OrtSession.Result, name: String): Any? {
+        val index = session.outputNames.indexOf(name)
+        require(index >= 0) { "LIA output is missing: $name" }
+        return results[index]?.value
+    }
+
     private fun tensor(values: FloatArray, shape: LongArray): OnnxTensor =
-        OnnxTensor.createTensor(environment, values, shape)
+        OnnxTensor.createTensor(environment, FloatBuffer.wrap(values), shape)
 
     private fun flattenFloatArray(value: Array<*>): FloatArray {
         val output = ArrayList<Float>()
@@ -89,7 +87,7 @@ class LiaPortraitAnimator(
                 is Array<*> -> node.forEach(::visit)
                 is Number -> output.add(node.toFloat())
                 null -> Unit
-                else -> error("Unexpected nested LIA tensor value: ${node.javaClass}")
+                else -> error("Unexpected nested LIA tensor value: ${node::class.java}")
             }
         }
         visit(value)
@@ -105,8 +103,7 @@ private object LiaTensor {
         val pixels = IntArray(256 * 256)
         scaled.getPixels(pixels, 0, 256, 0, 0, 256, 256)
         if (scaled !== bitmap) scaled.recycle()
-
-        val out = FloatArray(1 * 3 * 256 * 256)
+        val out = FloatArray(3 * 256 * 256)
         val plane = 256 * 256
         for (y in 0 until 256) {
             for (x in 0 until 256) {
@@ -148,7 +145,7 @@ private object LiaTensor {
                 is Array<*> -> node.forEach(::visit)
                 is Number -> output.add(node.toFloat())
                 null -> Unit
-                else -> error("Unexpected LIA image output type: ${node.javaClass}")
+                else -> error("Unexpected LIA image output type: ${node::class.java}")
             }
         }
         visit(value)
