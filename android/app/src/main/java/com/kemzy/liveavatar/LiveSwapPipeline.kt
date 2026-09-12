@@ -22,6 +22,14 @@ data class FaceGeometry(val landmarks: FaceLandmarks, val bbox: RectF? = null) {
 interface FaceDetector { fun detect(frame: Bitmap): FaceGeometry? }
 
 class MlKitFaceDetector : FaceDetector, AutoCloseable {
+    companion object {
+        // The Infinix-class device can legitimately need more than 500 ms for
+        // ML Kit face detection while the ONNX models are also using the CPU.
+        // Keep this bounded, but do not turn normal CPU contention into a
+        // per-frame "Timed out waiting for Task" failure.
+        private const val DETECTION_TIMEOUT_MS = 2000L
+    }
+
     private val detector = FaceDetection.getClient(
         FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
@@ -31,7 +39,11 @@ class MlKitFaceDetector : FaceDetector, AutoCloseable {
     )
 
     override fun detect(frame: Bitmap): FaceGeometry? {
-        val faces = Tasks.await(detector.process(InputImage.fromBitmap(frame, 0)), 500L, TimeUnit.MILLISECONDS)
+        val faces = Tasks.await(
+            detector.process(InputImage.fromBitmap(frame, 0)),
+            DETECTION_TIMEOUT_MS,
+            TimeUnit.MILLISECONDS
+        )
         val face = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() } ?: return null
         val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position ?: return null
         val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position ?: return null
