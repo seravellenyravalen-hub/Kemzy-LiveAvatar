@@ -14,84 +14,111 @@
         android:scaleType="centerCrop"
         android:visibility="gone" />
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:orientation="vertical"
-        android:padding="12dp">
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:padding="10dp"
-            android:text="Camera starting…"
-            android:textColor="@android:color/white"
-            android:background="#99000000" />
-
-        <TextView
-            android:id="@+id/sourceText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:padding="8dp"
-            android:text="Source face: none"
-            android:textColor="@android:color/white"
-            android:background="#77000000" />
-
+        android:fillViewport="false">
         <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-            <Button
-                android:id="@+id/importArcFaceButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="IMPORT ARCFACE" />
-            <Button
-                android:id="@+id/importInswapperButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="IMPORT INSWAPPER" />
-        </LinearLayout>
-
-        <EditText
-            android:id="@+id/rtmpEndpoint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="MYCAM MediaMTX RTMP endpoint"
-            android:inputType="textUri"
-            android:singleLine="true"
-            android:textColor="@android:color/white"
-            android:textColorHint="#B0FFFFFF"
-            android:background="#88000000" />
+            android:orientation="vertical"
+            android:padding="12dp">
 
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-            <Button
-                android:id="@+id/selectSourceButton"
+            <TextView
+                android:id="@+id/statusText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="SELECT SOURCE" />
-            <Button
-                android:id="@+id/liveButton"
+                android:padding="10dp"
+                android:text="Kémzy Studio · Camera starting…"
+                android:textColor="@android:color/white"
+                android:background="#99000000" />
+
+            <TextView
+                android:id="@+id/sourceText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="LIVE" />
-            <Button
-                android:id="@+id/stopButton"
+                android:layout_marginTop="6dp"
+                android:padding="8dp"
+                android:text="Source: none"
+                android:textColor="@android:color/white"
+                android:background="#77000000" />
+
+            <TextView
+                android:id="@+id/modelText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="STOP" />
+                android:layout_marginTop="6dp"
+                android:padding="8dp"
+                android:text="LivePortrait models: not installed"
+                android:textColor="@android:color/white"
+                android:background="#77000000" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+                <Button
+                    android:id="@+id/selectSourceButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SOURCE" />
+                <Button
+                    android:id="@+id/importModelsButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="MODELS" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+                <Button
+                    android:id="@+id/voiceButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="VOICE: NORMAL" />
+                <Button
+                    android:id="@+id/outputButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="OUTPUT: PREVIEW" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/rtmpEndpoint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:hint="RTMP endpoint (optional)"
+                android:inputType="textUri"
+                android:singleLine="true"
+                android:textColor="@android:color/white"
+                android:textColorHint="#B0FFFFFF"
+                android:background="#88000000" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+                <Button
+                    android:id="@+id/liveButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="START LIVE" />
+                <Button
+                    android:id="@+id/stopButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="STOP" />
+            </LinearLayout>
         </LinearLayout>
-    </LinearLayout>
+    </ScrollView>
 </FrameLayout>
