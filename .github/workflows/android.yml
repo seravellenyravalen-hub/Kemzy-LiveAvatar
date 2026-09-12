@@ -41,9 +41,14 @@ jobs:
       - name: Rename branded APK
         run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/kemzyavatar.apk
 
-      - name: Upload branded APK
+      - name: Generate APK SHA-256
+        run: sha256sum app/build/outputs/apk/debug/kemzyavatar.apk > app/build/outputs/apk/debug/kemzyavatar.apk.sha256
+
+      - name: Upload branded APK and checksum
         uses: actions/upload-artifact@v4
         with:
           name: kemzyavatar-apk
-          path: android/app/build/outputs/apk/debug/kemzyavatar.apk
+          path: |
+            android/app/build/outputs/apk/debug/kemzyavatar.apk
+            android/app/build/outputs/apk/debug/kemzyavatar.apk.sha256
           if-no-files-found: error
