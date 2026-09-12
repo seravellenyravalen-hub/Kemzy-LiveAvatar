@@ -247,7 +247,7 @@ private fun flattenValue(value: Any?): FloatTensor {
             is FloatBuffer -> { val d = v.duplicate(); val n = d.remaining(); d.get(out, offset, n); offset += n }
             is Array<*> -> v.forEach(::copy)
             is Number -> { out[offset++] = v.toFloat() }
-            else -> error("Unsupported ONNX output type: ${v.javaClass.name}")
+            else -> error("Unsupported ONNX output type: ${v?.javaClass?.name ?: "unknown"}")
         }
     }
     copy(value)
