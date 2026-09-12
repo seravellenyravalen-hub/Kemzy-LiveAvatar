@@ -1,12 +1,14 @@
 package com.kemzy.liveavatar
 
 import android.graphics.Bitmap
+import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.Closeable
 import java.io.File
-import java.nio.FloatBuffer
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class LiaPortraitAnimator(
     modelFile: File,
@@ -73,11 +75,15 @@ class LiaPortraitAnimator(
     private fun outputValue(results: OrtSession.Result, name: String): Any? {
         val index = session.outputNames.indexOf(name)
         require(index >= 0) { "LIA output is missing: $name" }
-        return results[index]?.value
+        val value = results.get(index)
+        return value.getValue()
     }
 
-    private fun tensor(values: FloatArray, shape: LongArray): OnnxTensor =
-        OnnxTensor.createTensor(environment, FloatBuffer.wrap(values), shape)
+    private fun tensor(values: FloatArray, shape: LongArray): OnnxTensor {
+        val buffer = ByteBuffer.allocateDirect(values.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        buffer.put(values).rewind()
+        return OnnxTensor.createTensor(environment, buffer, shape)
+    }
 
     private fun flattenFloatArray(value: Array<*>): FloatArray {
         val output = ArrayList<Float>()
