@@ -18,6 +18,12 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import com.kemzy.liveavatar.camera.StudioFaceTracker
+import com.kemzy.liveavatar.liveportrait.LivePortraitEngine
+import com.kemzy.liveavatar.output.MyCamBridge
+import com.kemzy.liveavatar.output.VirtualCameraBridge
+import com.kemzy.liveavatar.studio.StudioProfile
+import com.kemzy.liveavatar.studio.StudioProfileRepository
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,58 +33,58 @@ class MainActivity : ComponentActivity() {
     private lateinit var processedPreview: ImageView
     private lateinit var status: TextView
     private lateinit var sourceText: TextView
+    private lateinit var modelText: TextView
     private lateinit var rtmpEndpoint: EditText
+    private lateinit var voiceButton: Button
+    private lateinit var outputButton: Button
     private lateinit var liveButton: Button
     private lateinit var stopButton: Button
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var processingExecutor: ExecutorService
 
     private val framePipeline = FramePipeline(capacity = 1)
-    private val previewBitmap = BitmapOwnershipSlot()
-    private val sourceFaces = SourceFaceRepository()
-    private val sourceLoader by lazy { SourceFaceBitmapLoader(contentResolver) }
     private val modelRepository by lazy { ModelRepository(this) }
-    private val liveState = LiveSessionState()
-    private val liveController = LiveSessionController(liveState)
+    private val bundleRepository by lazy { LiveModelBundleRepository(modelRepository) }
+    private val validator by lazy { LivePortraitModelValidator(modelRepository) }
+    private val modelImporter by lazy { LivePortraitModelImporter(modelRepository, contentResolver) }
+    private val studio by lazy { StudioProfileRepository(this) }
+    private val faceTracker by lazy { StudioFaceTracker() }
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
-
-    private var sourceBitmap: Bitmap? = null
-    private var swapProcessor: LiveSwapProcessor? = null
-    private var detector: MlKitFaceDetector? = null
-    private var embeddingEngine: OnnxInferenceEngine? = null
-    private var swapperEngine: OnnxInferenceEngine? = null
-    private var rtmpOutput: RtmpLiveOutput? = null
-    private var pendingModelName: String? = null
     private val processing = AtomicBoolean(false)
 
-    private val lockLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result -> if (result.resultCode != RESULT_OK) finish() }
+    private var sourceBitmap: Bitmap? = null
+    private var portraitEngine: LivePortraitEngine? = null
+    private var selectedVoice = StudioProfile.VoiceMode.NORMAL
+    private var selectedOutput = StudioProfile.OutputMode.PREVIEW
+    private var myCam: VirtualCameraBridge = MyCamBridge()
+
+    private val lockLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) finish()
+    }
 
     private val sourcePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@registerForActivityResult
         runCatching {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             sourceBitmap?.recycle()
-            sourceBitmap = sourceLoader.load(uri)
-            sourceFaces.select(uri.toString())
-            liveState.selectSource(uri.toString())
-            sourceText.text = "Source face: selected"
-            status.text = "Source face ready · tap LIVE"
-        }.onFailure { error -> status.text = "Source error: ${error.message ?: "unable to load image"}" }
+            sourceBitmap = SourceFaceBitmapLoader(contentResolver).load(uri)
+            studio.updateSource(uri.toString())
+            sourceText.text = "Source: saved"
+            status.text = "Source saved · validate models, then Start Live"
+        }.onFailure { status.text = "Source error: ${it.message ?: "unable to load image"}" }
     }
 
-    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        uri ?: return@registerForActivityResult
-        val name = pendingModelName ?: return@registerForActivityResult
-        try {
-            modelRepository.importModel(contentResolver, uri, name)
-            status.text = "$name imported · ready for Live"
-        } catch (error: Throwable) {
-            status.text = "Model import failed: ${error.message ?: "unable to import model"}"
-        } finally {
-            pendingModelName = null
-        }
+    private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@registerForActivityResult
+        runCatching {
+            val result = modelImporter.importUris(uris)
+            updateModelStatus()
+            status.text = if (result.missing.isEmpty()) {
+                "LivePortrait bundle installed and validated"
+            } else {
+                "Models imported · missing: ${result.missing.joinToString()}"
+            }
+        }.onFailure { status.text = "Model import failed: ${it.message ?: "unable to import bundle"}" }
     }
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -92,164 +98,159 @@ class MainActivity : ComponentActivity() {
         processedPreview = findViewById(R.id.processedPreview)
         status = findViewById(R.id.statusText)
         sourceText = findViewById(R.id.sourceText)
+        modelText = findViewById(R.id.modelText)
         rtmpEndpoint = findViewById(R.id.rtmpEndpoint)
+        voiceButton = findViewById(R.id.voiceButton)
+        outputButton = findViewById(R.id.outputButton)
         liveButton = findViewById(R.id.liveButton)
         stopButton = findViewById(R.id.stopButton)
         cameraExecutor = Executors.newSingleThreadExecutor()
         processingExecutor = Executors.newSingleThreadExecutor()
 
+        val profile = studio.load()
+        selectedVoice = profile.voiceMode
+        selectedOutput = profile.outputMode
+        rtmpEndpoint.setText(profile.rtmpEndpoint)
+        voiceButton.text = "VOICE: ${selectedVoice.name}"
+        outputButton.text = "OUTPUT: ${selectedOutput.name}"
+
         findViewById<Button>(R.id.selectSourceButton).setOnClickListener {
             sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp"))
         }
-        findViewById<Button>(R.id.importArcFaceButton).setOnClickListener {
-            pendingModelName = InswapperModelSpec.recognizerModelName
+        findViewById<Button>(R.id.importModelsButton).setOnClickListener {
             modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
         }
-        findViewById<Button>(R.id.importInswapperButton).setOnClickListener {
-            pendingModelName = "inswapper_128.onnx"
-            modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
-        }
+        voiceButton.setOnClickListener { cycleVoice() }
+        outputButton.setOnClickListener { cycleOutput() }
         liveButton.setOnClickListener { startLive() }
         stopButton.setOnClickListener { stopLive() }
+
+        restoreSource(profile.sourceUri)
+        updateModelStatus()
+    }
+
+    private fun restoreSource(uriString: String?) {
+        if (uriString.isNullOrBlank()) return
+        runCatching {
+            sourceBitmap?.recycle()
+            sourceBitmap = SourceFaceBitmapLoader(contentResolver).load(Uri.parse(uriString))
+            sourceText.text = "Source: restored"
+        }.onFailure { sourceText.text = "Source: reselect required" }
+    }
+
+    private fun cycleVoice() {
+        selectedVoice = StudioProfile.VoiceMode.values()[(selectedVoice.ordinal + 1) % StudioProfile.VoiceMode.values().size]
+        voiceButton.text = "VOICE: ${selectedVoice.name}"
+        studio.updateVoice(selectedVoice)
+        status.text = if (selectedVoice == StudioProfile.VoiceMode.NORMAL) {
+            "Voice passthrough selected"
+        } else {
+            "${selectedVoice.name} voice selected · converter must be device-validated before use"
+        }
+    }
+
+    private fun cycleOutput() {
+        selectedOutput = StudioProfile.OutputMode.values()[(selectedOutput.ordinal + 1) % StudioProfile.OutputMode.values().size]
+        outputButton.text = "OUTPUT: ${selectedOutput.name}"
+        studio.updateOutput(selectedOutput, rtmpEndpoint.text.toString().trim())
+        status.text = when (selectedOutput) {
+            StudioProfile.OutputMode.PREVIEW -> "Output: local preview"
+            StudioProfile.OutputMode.RTMP -> "Output: RTMP endpoint saved"
+            StudioProfile.OutputMode.MYCAM -> "Output: MyCam bridge selected"
+        }
+    }
+
+    private fun updateModelStatus() {
+        val bundle = bundleRepository.inspect()
+        modelText.text = if (bundle.isComplete) {
+            "LivePortrait models: complete"
+        } else {
+            "LivePortrait models: missing ${bundle.missingRoles().joinToString() }"
+        }
     }
 
     private fun startLive() {
-        if (sourceBitmap == null) {
-            status.text = "Select a source face first."
+        val source = sourceBitmap
+        if (source == null) { status.text = "Select a source portrait first."; return }
+        val bundle = bundleRepository.inspect()
+        if (!bundle.isComplete) {
+            status.text = "Live blocked · import all required LivePortrait models first"
+            updateModelStatus()
             return
         }
-        val recognizer = modelRepository.model(InswapperModelSpec.recognizerModelName)
-        val swapper = modelRepository.installedModels().firstOrNull { it.name in InswapperModelSpec.modelNames }
-        if (recognizer == null || swapper == null) {
-            status.text = "AI models missing · import w600k_r50.onnx and inswapper_128.onnx first"
-            return
-        }
-
         runCatching {
             stopProcessingOnly()
-            detector = MlKitFaceDetector()
-            // Pass model files directly to ONNX Runtime. Do not call readBytes():
-            // copying both large ONNX models into the Java heap caused Live-start OOMs.
-            embeddingEngine = OnnxInferenceEngine.fromFile(recognizer, "w600k_r50 ArcFace")
-            swapperEngine = OnnxInferenceEngine.fromFile(swapper, "INSwapper 128")
-            swapProcessor = LiveSwapProcessor(
-                detector = detector!!,
-                embedder = ArcFaceEmbedder(embeddingEngine!!),
-                swapper = InswapperOnnx(swapperEngine!!),
-                compositor = FaceCompositor()
-            )
-            liveController.start()
-            processedPreview.visibility = ImageView.VISIBLE
+            val sourceFace = faceTracker.largestFace(source) ?: error("No face detected in the selected source portrait")
+            val engine = LivePortraitEngine(bundle)
+            engine.initialize(source, sourceFace)
+            portraitEngine = engine
             processing.set(true)
+            processedPreview.visibility = ImageView.VISIBLE
             processingExecutor.execute { processFrames() }
-
-            val endpoint = rtmpEndpoint.text.toString().trim()
-            if (endpoint.isNotEmpty()) {
-                rtmpOutput = RtmpLiveOutput(this) { message ->
-                    runOnUiThread { if (!isFinishing && !isDestroyed) status.text = message }
-                }.also { it.start(endpoint) }
-                status.text = "Live AI active · RTMP connecting"
-            } else {
-                status.text = "Live AI active · processed preview running"
-            }
-        }.onFailure { error ->
+            studio.updateOutput(selectedOutput, rtmpEndpoint.text.toString().trim())
+            status.text = "Kémzy Studio Live active · ${selectedOutput.name}"
+        }.onFailure {
             stopLive()
-            status.text = "Live start failed: ${error.message ?: error.javaClass.simpleName}"
+            status.text = "Live start failed: ${it.message ?: it.javaClass.simpleName}"
         }
     }
 
     private fun processFrames() {
         while (processing.get() && !isFinishing && !isDestroyed) {
-            val frame = framePipeline.poll()
-            if (frame == null) {
-                Thread.sleep(5)
-                continue
-            }
+            val frame = framePipeline.poll() ?: run { Thread.sleep(5); continue }
             try {
-                val output = swapProcessor?.process(frame.bitmap, sourceBitmap)
-                val rendered = output?.frame
-                if (rendered != null && output.status == LiveSwapStatus.Swapped) {
-                    val streaming = rtmpOutput != null
-                    if (streaming) {
-                        val displayCopy = rendered.copy(Bitmap.Config.ARGB_8888, false)
-                        rtmpOutput?.submit(rendered)
-                        showProcessedPreview(displayCopy)
-                    } else {
-                        showProcessedPreview(rendered)
+                val face = faceTracker.largestFace(frame.bitmap)
+                val output = if (face == null) null else portraitEngine?.process(frame.bitmap, face)
+                if (output != null) {
+                    showProcessedPreview(output)
+                    if (selectedOutput == StudioProfile.OutputMode.MYCAM) {
+                        myCam.submit(output)
                     }
-                } else if (output?.status == LiveSwapStatus.NoTargetFace) {
-                    runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Live AI · face not detected" }
                 }
             } catch (error: Throwable) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) status.text = "AI frame error: ${error.message ?: error.javaClass.simpleName}"
-                }
+                runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "AI frame error: ${error.message ?: error.javaClass.simpleName}" }
+            } finally {
+                if (!frame.bitmap.isRecycled) frame.bitmap.recycle()
             }
         }
     }
 
     private fun showProcessedPreview(frame: Bitmap) {
         runOnUiThread {
-            if (isFinishing || isDestroyed) {
-                if (!frame.isRecycled) frame.recycle()
-                return@runOnUiThread
-            }
-            previewBitmap.replace(frame)
-            previewBitmap.withBitmap { processedPreview.setImageBitmap(it) }
+            if (isFinishing || isDestroyed) { if (!frame.isRecycled) frame.recycle(); return@runOnUiThread }
+            processedPreview.setImageBitmap(frame)
         }
     }
 
     private fun stopProcessingOnly() {
         processing.set(false)
         framePipeline.clear()
-        rtmpOutput?.close()
-        rtmpOutput = null
-        runOnUiThread { previewBitmap.clear() }
-        runCatching { embeddingEngine?.close() }
-        runCatching { swapperEngine?.close() }
-        embeddingEngine = null
-        swapperEngine = null
-        detector?.close()
-        detector = null
-        swapProcessor = null
+        runCatching { portraitEngine?.close() }
+        portraitEngine = null
+        runCatching { myCam.disconnect() }
+        processedPreview.setImageDrawable(null)
     }
 
     private fun stopLive() {
         stopProcessingOnly()
-        liveController.stop()
         processedPreview.visibility = ImageView.GONE
-        processedPreview.setImageDrawable(null)
         status.text = "Live mode stopped"
     }
 
     override fun onResume() {
         super.onResume()
-        if (appLock.isLocked()) {
-            lockLauncher.launch(Intent(this, LockActivity::class.java))
-            return
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            startCamera()
-        } else {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
+        if (appLock.isLocked()) { lockLauncher.launch(Intent(this, LockActivity::class.java)); return }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
+        else permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
     override fun onPause() {
-        stopLive()
-        stopCamera()
-        appLock.lock()
-        super.onPause()
+        stopLive(); stopCamera(); appLock.lock(); super.onPause()
     }
 
     override fun onDestroy() {
-        stopLive()
-        stopCamera()
-        cameraExecutor.shutdownNow()
-        processingExecutor.shutdownNow()
-        previewBitmap.clear()
-        sourceBitmap?.recycle()
-        sourceBitmap = null
+        stopLive(); stopCamera(); cameraExecutor.shutdownNow(); processingExecutor.shutdownNow()
+        faceTracker.close(); sourceBitmap?.recycle(); sourceBitmap = null
         super.onDestroy()
     }
 
@@ -263,29 +264,16 @@ class MainActivity : ComponentActivity() {
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also { useCase ->
-                    useCase.setAnalyzer(
-                        cameraExecutor,
-                        LiveFrameAnalyzer(
-                            pipeline = framePipeline,
-                            onFrameAccepted = {
-                                runOnUiThread {
-                                    if (!isFinishing && !isDestroyed && !liveController.isRunning) {
-                                        status.text = "Camera ready · select a source face"
-                                    }
-                                }
-                            },
-                            onFrameDropped = {},
-                            onFrameError = { error ->
-                                runOnUiThread {
-                                    if (!isFinishing && !isDestroyed) status.text = "Frame error: ${error.message ?: "unsupported frame"}"
-                                }
-                            }
-                        )
-                    )
+                    useCase.setAnalyzer(cameraExecutor, LiveFrameAnalyzer(
+                        pipeline = framePipeline,
+                        onFrameAccepted = {},
+                        onFrameDropped = {},
+                        onFrameError = { error -> runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Frame error: ${error.message ?: "unsupported frame"}" } }
+                    ))
                 }
             provider.unbindAll()
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
-            status.text = "Camera ready · select a source face"
+            status.text = "Camera ready · Studio setup loaded"
         }, ContextCompat.getMainExecutor(this))
     }
 
