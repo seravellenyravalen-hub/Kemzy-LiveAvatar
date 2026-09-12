@@ -12,6 +12,8 @@ class ModelRepository(private val context: Context) {
 
     fun model(name: String): File? = File(modelDir, name).takeIf { it.isFile && it.length() > 0 }
 
+    fun emap(): File? = File(modelDir, "inswapper_emap.bin").takeIf { it.isFile && it.length() == 512L * 512L * 4L }
+
     fun importModel(source: File, name: String): File {
         require(name.endsWith(".onnx")) { "Only ONNX models are supported." }
         val destination = File(modelDir, name)
@@ -27,6 +29,18 @@ class ModelRepository(private val context: Context) {
             destination.outputStream().use { output -> input.copyTo(output) }
         }
         require(destination.length() > 0L) { "Selected model is empty." }
+        return destination
+    }
+
+    fun importEmap(resolver: ContentResolver, uri: Uri): File {
+        val destination = File(modelDir, "inswapper_emap.bin")
+        resolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Unable to open EMAP file." }
+            destination.outputStream().use { output -> input.copyTo(output) }
+        }
+        require(destination.length() == 512L * 512L * 4L) {
+            "EMAP must contain exactly 262144 float32 values (1,048,576 bytes)."
+        }
         return destination
     }
 }
