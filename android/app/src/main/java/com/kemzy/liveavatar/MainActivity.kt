@@ -51,9 +51,9 @@ class MainActivity : ComponentActivity() {
     private var pendingModelName: String? = null
     private val processing = AtomicBoolean(false)
 
-    private val lockLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result -> if (result.resultCode != RESULT_OK) finish() }
+    private val lockLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) finish()
+    }
 
     private val sourcePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@registerForActivityResult
@@ -79,6 +79,14 @@ class MainActivity : ComponentActivity() {
         } finally {
             pendingModelName = null
         }
+    }
+
+    private val emapPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri ?: return@registerForActivityResult
+        runCatching {
+            modelRepository.importEmap(contentResolver, uri)
+            status.text = "INSwapper EMAP imported · ready for Live"
+        }.onFailure { error -> status.text = "EMAP import failed: ${error.message ?: "invalid EMAP"}" }
     }
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -109,6 +117,9 @@ class MainActivity : ComponentActivity() {
             pendingModelName = "inswapper_128.onnx"
             modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
         }
+        findViewById<Button>(R.id.importEmapButton).setOnClickListener {
+            emapPicker.launch(arrayOf("application/octet-stream", "application/octet-stream+binary", "*/*"))
+        }
         liveButton.setOnClickListener { startLive() }
         stopButton.setOnClickListener { stopLive() }
     }
@@ -120,22 +131,26 @@ class MainActivity : ComponentActivity() {
         }
         val recognizer = modelRepository.model(InswapperModelSpec.recognizerModelName)
         val swapper = modelRepository.installedModels().firstOrNull { it.name in InswapperModelSpec.modelNames }
+        val emap = modelRepository.emap()
         if (recognizer == null || swapper == null) {
             status.text = "AI models missing · import w600k_r50.onnx and inswapper_128.onnx first"
+            return
+        }
+        if (emap == null) {
+            status.text = "INSwapper EMAP missing · import inswapper_emap.bin first"
             return
         }
 
         runCatching {
             stopProcessingOnly()
             detector = MlKitFaceDetector()
-            // Keep large ONNX weights on disk. ONNX Runtime opens these paths
-            // directly, avoiding readBytes() Java-heap copies on Live startup.
+            // Keep large ONNX weights on disk. ONNX Runtime opens these paths directly.
             embeddingEngine = OnnxInferenceEngine(recognizer, "w600k_r50 ArcFace")
             swapperEngine = OnnxInferenceEngine(swapper, "INSwapper 128")
             swapProcessor = LiveSwapProcessor(
                 detector = detector!!,
                 embedder = ArcFaceEmbedder(embeddingEngine!!),
-                swapper = InswapperOnnx(swapperEngine!!),
+                swapper = InswapperOnnx(swapperEngine!!, emap),
                 compositor = FaceCompositor()
             )
             liveController.start()
@@ -228,69 +243,37 @@ class MainActivity : ComponentActivity() {
             lockLauncher.launch(Intent(this, LockActivity::class.java))
             return
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            startCamera()
-        } else {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
+        else permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
     override fun onPause() {
         stopLive()
         stopCamera()
-        appLock.lock()
         super.onPause()
     }
 
-    override fun onDestroy() {
-        stopLive()
-        stopCamera()
-        cameraExecutor.shutdownNow()
-        processingExecutor.shutdownNow()
-        previewBitmap.clear()
-        sourceBitmap?.recycle()
-        sourceBitmap = null
-        super.onDestroy()
-    }
-
     private fun startCamera() {
-        val future = ProcessCameraProvider.getInstance(this)
-        future.addListener({
-            if (isFinishing || isDestroyed || appLock.isLocked()) return@addListener
-            val provider = future.get()
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            val provider = providerFuture.get()
             val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also { useCase ->
-                    useCase.setAnalyzer(
-                        cameraExecutor,
-                        LiveFrameAnalyzer(
-                            pipeline = framePipeline,
-                            onFrameAccepted = {
-                                runOnUiThread {
-                                    if (!isFinishing && !isDestroyed && !liveController.isRunning) {
-                                        status.text = "Camera ready · select a source face"
-                                    }
-                                }
-                            },
-                            onFrameDropped = {},
-                            onFrameError = { error ->
-                                runOnUiThread {
-                                    if (!isFinishing && !isDestroyed) status.text = "Frame error: ${error.message ?: "unsupported frame"}"
-                                }
-                            }
-                        )
-                    )
-                }
+            val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+            analysis.setAnalyzer(cameraExecutor, LiveFrameAnalyzer(framePipeline))
             provider.unbindAll()
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
-            status.text = "Camera ready · select a source face"
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun stopCamera() {
         runCatching { ProcessCameraProvider.getInstance(this).get().unbindAll() }
-        framePipeline.clear()
+    }
+
+    override fun onDestroy() {
+        stopLive()
+        sourceBitmap?.recycle()
+        cameraExecutor.shutdownNow()
+        processingExecutor.shutdownNow()
+        super.onDestroy()
     }
 }
