@@ -6,43 +6,33 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import ai.onnxruntime.OnnxTensor
+import com.google.mlkit.vision.face.Face
 import com.kemzy.liveavatar.LiveModelBundle
 import com.kemzy.liveavatar.OnnxInferenceEngine
-import com.google.mlkit.vision.face.Face
 import java.io.Closeable
-import kotlin.math.cos
+import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sin
 
-/**
- * Device-side LivePortrait runtime. Models are opened from private files and
- * sessions are kept for the lifetime of one Live session only.
- *
- * The engine deliberately keeps Android camera/UI concerns outside the model
- * graph. A driver Face from ML Kit supplies the crop; the ONNX motion model
- * produces the driver keypoints; stitching and warping generate the portrait.
- */
+/** Device-side, file-backed LivePortrait runtime. */
 class LivePortraitEngine(private val bundle: LiveModelBundle) : Closeable {
     private lateinit var appearance: OnnxInferenceEngine
     private lateinit var motion: OnnxInferenceEngine
     private lateinit var stitching: OnnxInferenceEngine
     private lateinit var warping: OnnxInferenceEngine
-
     private var sourceFeature: FloatTensor? = null
     private var sourceMotion: MotionState? = null
     private var sourceBitmap: Bitmap? = null
     private var initialized = false
 
-    fun initialize(source: Bitmap) {
+    fun initialize(source: Bitmap, sourceFace: Face) {
         check(bundle.isComplete) { "LivePortrait model bundle is incomplete: ${bundle.missingRoles().joinToString()}" }
         closeSessionsOnly()
         appearance = OnnxInferenceEngine.fromFile(requireNotNull(bundle.appearance), "appearance feature extractor")
         motion = OnnxInferenceEngine.fromFile(requireNotNull(bundle.motion), "motion extractor")
         stitching = OnnxInferenceEngine.fromFile(requireNotNull(bundle.stitching), "stitching")
         warping = OnnxInferenceEngine.fromFile(requireNotNull(bundle.warpingSpade), "warping SPADE")
-
-        val crop = FaceCrop.square(source, null, 2.3f, 256)
+        val crop = FaceCrop.square(source, sourceFace, 2.3f, 256)
         sourceBitmap?.let { if (!it.isRecycled) it.recycle() }
         sourceBitmap = crop
         sourceFeature = appearance.inferImage(crop)
@@ -56,13 +46,8 @@ class LivePortraitEngine(private val bundle: LiveModelBundle) : Closeable {
         return try {
             val driverMotion = motion.inferMotion(driverCrop)
             val kpSource = requireNotNull(sourceMotion).keypoints
-            val kpDriving = driverMotion.keypoints
-            val stitched = stitching.inferStitch(kpSource, kpDriving)
-            val generated = warping.inferWarp(
-                requireNotNull(sourceFeature),
-                stitched,
-                kpSource
-            )
+            val stitched = stitching.inferStitch(kpSource, driverMotion.keypoints)
+            val generated = warping.inferWarp(requireNotNull(sourceFeature), stitched, kpSource)
             composite(frame, generated, FaceCrop.squareRect(frame, face, 2.3f))
         } finally {
             if (!driverCrop.isRecycled) driverCrop.recycle()
@@ -91,17 +76,13 @@ class LivePortraitEngine(private val bundle: LiveModelBundle) : Closeable {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val pad = max(8f, target.width() * 0.04f)
         val mask = RectF(target.left - pad, target.top - pad, target.right + pad, target.bottom + pad)
-        canvas.save()
-        canvas.clipRect(mask)
-        canvas.drawBitmap(generated, null, mask, paint)
-        canvas.restore()
+        canvas.save(); canvas.clipRect(mask); canvas.drawBitmap(generated, null, mask, paint); canvas.restore()
         if (!generated.isRecycled) generated.recycle()
         return out
     }
 }
 
 data class FloatTensor(val values: FloatArray, val shape: LongArray)
-
 data class MotionState(
     val pitch: Float,
     val yaw: Float,
@@ -114,17 +95,14 @@ data class MotionState(
 
 private fun OnnxInferenceEngine.inferImage(bitmap: Bitmap): FloatTensor {
     val input = bitmap.toNchwFloat()
-    return runTensor(input.values, input.shape).firstTensor()
+    return runTensor(input.values, input.shape).first()
 }
 
 private fun OnnxInferenceEngine.inferMotion(bitmap: Bitmap): MotionState {
     val result = runTensor(bitmap.toNchwFloat().values, longArrayOf(1, 3, 256, 256))
     require(result.size >= 7) { "Motion extractor returned ${result.size} outputs; expected at least 7." }
-    val pitchRaw = result[0].values
-    val yawRaw = result[1].values
-    val rollRaw = result[2].values
     return MotionState(
-        headpose(pitchRaw), headpose(yawRaw), headpose(rollRaw),
+        headpose(result[0].values), headpose(result[1].values), headpose(result[2].values),
         result[3].values.copyOf(), result[4].values.copyOf(), result[5].values.first(),
         result[6].values.reshapeKeypoints()
     )
@@ -132,43 +110,36 @@ private fun OnnxInferenceEngine.inferMotion(bitmap: Bitmap): MotionState {
 
 private fun OnnxInferenceEngine.inferStitch(source: FloatArray, driving: FloatArray): FloatArray {
     val joined = FloatArray(source.size + driving.size)
-    source.copyInto(joined)
-    driving.copyInto(joined, source.size)
-    return runTensor(joined, longArrayOf(1, joined.size.toLong())).firstTensor().values
-        .let { delta ->
-            val kpCount = source.size / 3
-            val out = driving.copyOf()
-            val count = min(kpCount * 3, delta.size)
-            for (i in 0 until count) out[i] += delta[i]
-            if (delta.size >= count + 2) {
-                for (i in 0 until kpCount) {
-                    out[i * 3] += delta[count]
-                    out[i * 3 + 1] += delta[count + 1]
-                }
-            }
-            out
-        }
+    source.copyInto(joined); driving.copyInto(joined, source.size)
+    val delta = runTensor(joined, longArrayOf(1, joined.size.toLong())).first().values
+    val kpCount = source.size / 3
+    val out = driving.copyOf()
+    val expressionCount = min(kpCount * 3, delta.size)
+    for (i in 0 until expressionCount) out[i] += delta[i]
+    if (delta.size >= expressionCount + 2) {
+        for (i in 0 until kpCount) { out[i * 3] += delta[expressionCount]; out[i * 3 + 1] += delta[expressionCount + 1] }
+    }
+    return out
 }
 
 private fun OnnxInferenceEngine.inferWarp(feature: FloatTensor, driving: FloatArray, source: FloatArray): Bitmap {
-    val inputs = listOf(
+    val result = runMultiTensor(listOf(
         feature.values to feature.shape,
         driving to longArrayOf(1, driving.size.toLong()),
         source to longArrayOf(1, source.size.toLong())
-    )
-    val result = runMultiTensor(inputs).firstTensor()
-    require(result.shape.size == 4) { "Warping model output is not NCHW: ${result.shape.contentToString()}" }
-    val n = result.shape[2].toInt()
-    val w = result.shape[3].toInt()
-    require(result.shape[0] == 1L && result.shape[1] == 3L) { "Warping model must return RGB NCHW." }
-    val pixels = IntArray(n * w)
+    )).first()
+    require(result.shape.size == 4 && result.shape[0] == 1L && result.shape[1] == 3L) {
+        "Warping model must return 1x3xHxW, got ${result.shape.contentToString()}"
+    }
+    val h = result.shape[2].toInt(); val w = result.shape[3].toInt(); val plane = h * w
+    val pixels = IntArray(plane)
     for (i in pixels.indices) {
         val r = (result.values[i].coerceIn(0f, 1f) * 255f).toInt()
-        val g = (result.values[n * w + i].coerceIn(0f, 1f) * 255f).toInt()
-        val b = (result.values[2 * n * w + i].coerceIn(0f, 1f) * 255f).toInt()
+        val g = (result.values[plane + i].coerceIn(0f, 1f) * 255f).toInt()
+        val b = (result.values[2 * plane + i].coerceIn(0f, 1f) * 255f).toInt()
         pixels[i] = -0x1000000 or (r shl 16) or (g shl 8) or b
     }
-    return Bitmap.createBitmap(pixels, w, n, Bitmap.Config.ARGB_8888)
+    return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
 }
 
 private fun OnnxInferenceEngine.runTensor(values: FloatArray, shape: LongArray): List<FloatTensor> =
@@ -182,39 +153,33 @@ private fun OnnxInferenceEngine.runMultiTensor(inputs: List<Pair<FloatArray, Lon
         require(names.size >= tensors.size) { "Model expects ${names.size} inputs but runtime supplied ${tensors.size}." }
         val feed = names.take(tensors.size).mapIndexed { i, name -> name to tensors[i] }.toMap()
         run(feed).use { result ->
-            result.map { value ->
-                val tensor = value as? OnnxTensor ?: error("ONNX output is not a tensor")
-                tensor.flattenTensor()
-            }
+            (0 until result.size).map { index -> (result[index].value as? OnnxTensor)?.flattenTensor()
+                ?: error("ONNX output $index is not a tensor") }
         }
-    } finally {
-        tensors.forEach { it.close() }
-    }
+    } finally { tensors.forEach { it.close() } }
 }
 
 private fun OnnxTensor.flattenTensor(): FloatTensor {
     val shape = info.shape
-    val value = value
-    val out = FloatArray(shape.fold(1L) { a, b -> a * b }.toInt())
-    fun copy(v: Any?, offset: Int): Int {
-        if (v is FloatArray) { v.copyInto(out, offset); return v.size }
-        if (v is Array<*>) { var p = offset; v.forEach { p += copy(it, p) }; return p - offset }
-        if (v is Number) { out[offset] = v.toFloat(); return 1 }
-        error("Unsupported ONNX tensor value ${v?.javaClass}")
+    val count = shape.fold(1L) { a, b -> a * b }.toInt()
+    val out = FloatArray(count)
+    fun copy(v: Any?, offset: Int): Int = when (v) {
+        is FloatArray -> { v.copyInto(out, offset); v.size }
+        is FloatBuffer -> { val dup = v.duplicate(); dup.get(out, offset, dup.remaining()); dup.remaining() }
+        is Array<*> -> { var p = offset; v.forEach { p += copy(it, p) }; p - offset }
+        is Number -> { out[offset] = v.toFloat(); 1 }
+        else -> error("Unsupported ONNX tensor value ${v?.javaClass}")
     }
     copy(value, 0)
     return FloatTensor(out, shape)
 }
-
-private fun FloatTensor.firstTensor(): FloatTensor = this
 
 private fun FloatArray.reshapeKeypoints(): FloatArray =
     if (size % 3 == 0) copyOf() else error("Expected keypoint tensor divisible by 3, got $size")
 
 private fun headpose(values: FloatArray): Float {
     if (values.size != 66) return values.firstOrNull() ?: 0f
-    var sum = 0.0
-    var weighted = 0.0
+    var sum = 0.0; var weighted = 0.0
     for (i in values.indices) { val e = kotlin.math.exp(values[i].toDouble()); sum += e; weighted += e * i }
     return ((weighted / sum) * 3.0 - 97.5).toFloat()
 }
@@ -222,15 +187,9 @@ private fun headpose(values: FloatArray): Float {
 private data class Nchw(val values: FloatArray, val shape: LongArray)
 private fun Bitmap.toNchwFloat(): Nchw {
     val bmp = if (width == 256 && height == 256) this else Bitmap.createScaledBitmap(this, 256, 256, true)
-    val pixels = IntArray(256 * 256)
-    bmp.getPixels(pixels, 0, 256, 0, 0, 256, 256)
-    val out = FloatArray(3 * 256 * 256)
-    val plane = 256 * 256
-    for (i in pixels.indices) {
-        out[i] = ((pixels[i] shr 16 and 255) / 255f)
-        out[plane + i] = ((pixels[i] shr 8 and 255) / 255f)
-        out[2 * plane + i] = ((pixels[i] and 255) / 255f)
-    }
+    val pixels = IntArray(256 * 256); bmp.getPixels(pixels, 0, 256, 0, 0, 256, 256)
+    val out = FloatArray(3 * 256 * 256); val plane = 256 * 256
+    for (i in pixels.indices) { out[i] = ((pixels[i] shr 16 and 255) / 255f); out[plane + i] = ((pixels[i] shr 8 and 255) / 255f); out[2 * plane + i] = ((pixels[i] and 255) / 255f) }
     if (bmp !== this) bmp.recycle()
     return Nchw(out, longArrayOf(1, 3, 256, 256))
 }
@@ -238,20 +197,16 @@ private fun Bitmap.toNchwFloat(): Nchw {
 private object FaceCrop {
     fun square(source: Bitmap, face: Face?, scale: Float, size: Int): Bitmap {
         val rect = squareRect(source, face, scale)
-        val crop = Bitmap.createBitmap(source, rect.left, rect.top, rect.width(), rect.height())
+        val crop = Bitmap.createBitmap(source, rect.left.toInt(), rect.top.toInt(), max(1, rect.width().toInt()), max(1, rect.height().toInt()))
         return Bitmap.createScaledBitmap(crop, size, size, true).also { if (it !== crop) crop.recycle() }
     }
-
     fun squareRect(source: Bitmap, face: Face?, scale: Float): RectF {
         val box = face?.boundingBox ?: Rect(0, 0, source.width, source.height)
-        val cx = box.centerX().toFloat()
-        val cy = box.centerY().toFloat()
+        val cx = box.centerX().toFloat(); val cy = box.centerY().toFloat()
         val side = max(box.width(), box.height()).toFloat() * scale
-        val left = (cx - side / 2f).coerceAtLeast(0f)
-        val top = (cy - side / 2f).coerceAtLeast(0f)
-        val right = (left + side).coerceAtMost(source.width.toFloat())
-        val bottom = (top + side).coerceAtMost(source.height.toFloat())
-        val finalSide = min(right - left, bottom - top)
-        return RectF(left, top, left + finalSide, top + finalSide)
+        val left = (cx - side / 2f).coerceIn(0f, max(0f, source.width - side))
+        val top = (cy - side / 2f).coerceIn(0f, max(0f, source.height - side))
+        val actual = min(side, min(source.width - left, source.height - top))
+        return RectF(left, top, left + actual, top + actual)
     }
 }
