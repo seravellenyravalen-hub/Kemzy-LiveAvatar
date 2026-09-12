@@ -20,7 +20,9 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.kemzy.liveavatar.camera.StudioFaceTracker
 import com.kemzy.liveavatar.liveportrait.LivePortraitEngine
+import com.kemzy.liveavatar.output.LiveOutput
 import com.kemzy.liveavatar.output.MyCamBridge
+import com.kemzy.liveavatar.output.RtmpLiveOutput
 import com.kemzy.liveavatar.output.VirtualCameraBridge
 import com.kemzy.liveavatar.studio.StudioProfile
 import com.kemzy.liveavatar.studio.StudioProfileRepository
@@ -45,7 +47,6 @@ class MainActivity : ComponentActivity() {
     private val framePipeline = FramePipeline(capacity = 1)
     private val modelRepository by lazy { ModelRepository(this) }
     private val bundleRepository by lazy { LiveModelBundleRepository(modelRepository) }
-    private val validator by lazy { LivePortraitModelValidator(modelRepository) }
     private val modelImporter by lazy { LivePortraitModelImporter(modelRepository, contentResolver) }
     private val studio by lazy { StudioProfileRepository(this) }
     private val faceTracker by lazy { StudioFaceTracker() }
@@ -57,6 +58,8 @@ class MainActivity : ComponentActivity() {
     private var selectedVoice = StudioProfile.VoiceMode.NORMAL
     private var selectedOutput = StudioProfile.OutputMode.PREVIEW
     private var myCam: VirtualCameraBridge = MyCamBridge()
+    private var outputSink: LiveOutput? = null
+    private var displayedBitmap: Bitmap? = null
 
     private val lockLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != RESULT_OK) finish()
@@ -79,11 +82,8 @@ class MainActivity : ComponentActivity() {
         runCatching {
             val result = modelImporter.importUris(uris)
             updateModelStatus()
-            status.text = if (result.missing.isEmpty()) {
-                "LivePortrait bundle installed and validated"
-            } else {
-                "Models imported · missing: ${result.missing.joinToString()}"
-            }
+            status.text = if (result.missing.isEmpty()) "LivePortrait bundle installed and validated"
+            else "Models imported · missing: ${result.missing.joinToString()}"
         }.onFailure { status.text = "Model import failed: ${it.message ?: "unable to import bundle"}" }
     }
 
@@ -114,12 +114,8 @@ class MainActivity : ComponentActivity() {
         voiceButton.text = "VOICE: ${selectedVoice.name}"
         outputButton.text = "OUTPUT: ${selectedOutput.name}"
 
-        findViewById<Button>(R.id.selectSourceButton).setOnClickListener {
-            sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp"))
-        }
-        findViewById<Button>(R.id.importModelsButton).setOnClickListener {
-            modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
-        }
+        findViewById<Button>(R.id.selectSourceButton).setOnClickListener { sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp")) }
+        findViewById<Button>(R.id.importModelsButton).setOnClickListener { modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*")) }
         voiceButton.setOnClickListener { cycleVoice() }
         outputButton.setOnClickListener { cycleOutput() }
         liveButton.setOnClickListener { startLive() }
@@ -142,41 +138,31 @@ class MainActivity : ComponentActivity() {
         selectedVoice = StudioProfile.VoiceMode.values()[(selectedVoice.ordinal + 1) % StudioProfile.VoiceMode.values().size]
         voiceButton.text = "VOICE: ${selectedVoice.name}"
         studio.updateVoice(selectedVoice)
-        status.text = if (selectedVoice == StudioProfile.VoiceMode.NORMAL) {
-            "Voice passthrough selected"
-        } else {
-            "${selectedVoice.name} voice selected · converter must be device-validated before use"
-        }
+        status.text = if (selectedVoice == StudioProfile.VoiceMode.NORMAL) "Voice: microphone passthrough" else "Voice ${selectedVoice.name}: converter must be device-validated"
     }
 
     private fun cycleOutput() {
         selectedOutput = StudioProfile.OutputMode.values()[(selectedOutput.ordinal + 1) % StudioProfile.OutputMode.values().size]
         outputButton.text = "OUTPUT: ${selectedOutput.name}"
         studio.updateOutput(selectedOutput, rtmpEndpoint.text.toString().trim())
-        status.text = when (selectedOutput) {
-            StudioProfile.OutputMode.PREVIEW -> "Output: local preview"
-            StudioProfile.OutputMode.RTMP -> "Output: RTMP endpoint saved"
-            StudioProfile.OutputMode.MYCAM -> "Output: MyCam bridge selected"
-        }
+        status.text = "Output selected: ${selectedOutput.name}"
     }
 
     private fun updateModelStatus() {
         val bundle = bundleRepository.inspect()
-        modelText.text = if (bundle.isComplete) {
-            "LivePortrait models: complete"
-        } else {
-            "LivePortrait models: missing ${bundle.missingRoles().joinToString() }"
-        }
+        modelText.text = if (bundle.isComplete) "LivePortrait models: complete" else "LivePortrait models: missing ${bundle.missingRoles().joinToString()}"
     }
 
     private fun startLive() {
-        val source = sourceBitmap
-        if (source == null) { status.text = "Select a source portrait first."; return }
+        val source = sourceBitmap ?: run { status.text = "Select a source portrait first."; return }
+        if (selectedVoice != StudioProfile.VoiceMode.NORMAL) {
+            status.text = "Live blocked: ${selectedVoice.name} voice conversion is not installed yet; NORMAL is the verified voice path."
+            return
+        }
         val bundle = bundleRepository.inspect()
         if (!bundle.isComplete) {
             status.text = "Live blocked · import all required LivePortrait models first"
-            updateModelStatus()
-            return
+            updateModelStatus(); return
         }
         runCatching {
             stopProcessingOnly()
@@ -184,6 +170,16 @@ class MainActivity : ComponentActivity() {
             val engine = LivePortraitEngine(bundle)
             engine.initialize(source, sourceFace)
             portraitEngine = engine
+            outputSink = when (selectedOutput) {
+                StudioProfile.OutputMode.PREVIEW -> null
+                StudioProfile.OutputMode.RTMP -> RtmpLiveOutput(this, rtmpEndpoint.text.toString().trim()) { message -> runOnUiThread { status.text = message } }
+                StudioProfile.OutputMode.MYCAM -> null
+            }
+            if (selectedOutput == StudioProfile.OutputMode.MYCAM) {
+                check(myCam.isAvailable) { "MyCam bridge is not connected on this device" }
+                check(myCam.connect().isSuccess) { "Unable to connect to MyCam" }
+            }
+            outputSink?.start()
             processing.set(true)
             processedPreview.visibility = ImageView.VISIBLE
             processingExecutor.execute { processFrames() }
@@ -202,10 +198,9 @@ class MainActivity : ComponentActivity() {
                 val face = faceTracker.largestFace(frame.bitmap)
                 val output = if (face == null) null else portraitEngine?.process(frame.bitmap, face)
                 if (output != null) {
+                    outputSink?.submit(output)
+                    if (selectedOutput == StudioProfile.OutputMode.MYCAM) myCam.submit(output)
                     showProcessedPreview(output)
-                    if (selectedOutput == StudioProfile.OutputMode.MYCAM) {
-                        myCam.submit(output)
-                    }
                 }
             } catch (error: Throwable) {
                 runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "AI frame error: ${error.message ?: error.javaClass.simpleName}" }
@@ -218,6 +213,8 @@ class MainActivity : ComponentActivity() {
     private fun showProcessedPreview(frame: Bitmap) {
         runOnUiThread {
             if (isFinishing || isDestroyed) { if (!frame.isRecycled) frame.recycle(); return@runOnUiThread }
+            displayedBitmap?.let { if (it !== frame && !it.isRecycled) it.recycle() }
+            displayedBitmap = frame
             processedPreview.setImageBitmap(frame)
         }
     }
@@ -225,9 +222,13 @@ class MainActivity : ComponentActivity() {
     private fun stopProcessingOnly() {
         processing.set(false)
         framePipeline.clear()
+        runCatching { outputSink?.close() }
+        outputSink = null
+        runCatching { myCam.disconnect() }
         runCatching { portraitEngine?.close() }
         portraitEngine = null
-        runCatching { myCam.disconnect() }
+        displayedBitmap?.let { if (!it.isRecycled) it.recycle() }
+        displayedBitmap = null
         processedPreview.setImageDrawable(null)
     }
 
@@ -249,8 +250,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        stopLive(); stopCamera(); cameraExecutor.shutdownNow(); processingExecutor.shutdownNow()
-        faceTracker.close(); sourceBitmap?.recycle(); sourceBitmap = null
+        stopLive(); stopCamera(); cameraExecutor.shutdownNow(); processingExecutor.shutdownNow(); faceTracker.close()
+        sourceBitmap?.let { if (!it.isRecycled) it.recycle() }; sourceBitmap = null
         super.onDestroy()
     }
 
@@ -260,17 +261,12 @@ class MainActivity : ComponentActivity() {
             if (isFinishing || isDestroyed || appLock.isLocked()) return@addListener
             val provider = future.get()
             val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also { useCase ->
-                    useCase.setAnalyzer(cameraExecutor, LiveFrameAnalyzer(
-                        pipeline = framePipeline,
-                        onFrameAccepted = {},
-                        onFrameDropped = {},
-                        onFrameError = { error -> runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Frame error: ${error.message ?: "unsupported frame"}" } }
-                    ))
-                }
+            val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build().also { useCase ->
+                useCase.setAnalyzer(cameraExecutor, LiveFrameAnalyzer(
+                    pipeline = framePipeline,
+                    onFrameError = { error -> runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Frame error: ${error.message ?: "unsupported frame"}" } }
+                ))
+            }
             provider.unbindAll()
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, analysis)
             status.text = "Camera ready · Studio setup loaded"
