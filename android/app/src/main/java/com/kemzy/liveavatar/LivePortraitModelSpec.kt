@@ -12,6 +12,8 @@ object LivePortraitModelSpec {
     const val retinaFace = "retinaface_det_static.onnx"
     const val face2d106 = "face_2dpose_106_static.onnx"
 
+    const val warpingSpadeSha256 = "1bae996fef2fe742d87f10b88c1b9c8fb601fd283ab004e3efa49def9fe58c2d"
+
     val requiredNames: List<String> = listOf(
         appearance, motion, warpingSpade, stitching, stitchingEye, stitchingLip,
         landmark, retinaFace, face2d106
