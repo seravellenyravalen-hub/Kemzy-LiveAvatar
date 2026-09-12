@@ -43,10 +43,7 @@ class MainActivity : ComponentActivity() {
     private val appLock by lazy { (application as KemzyApplication).privacyLock }
 
     private var sourceBitmap: Bitmap? = null
-    private var swapProcessor: LiveSwapProcessor? = null
-    private var detector: MlKitFaceDetector? = null
-    private var embeddingEngine: OnnxInferenceEngine? = null
-    private var swapperEngine: OnnxInferenceEngine? = null
+    private var portraitAnimator: LiaPortraitAnimator? = null
     private var rtmpOutput: RtmpLiveOutput? = null
     private var pendingModelName: String? = null
     private val processing = AtomicBoolean(false)
@@ -63,8 +60,8 @@ class MainActivity : ComponentActivity() {
             sourceBitmap = sourceLoader.load(uri)
             sourceFaces.select(uri.toString())
             liveState.selectSource(uri.toString())
-            sourceText.text = "Source face: selected"
-            status.text = "Source face ready · tap LIVE"
+            sourceText.text = "Source portrait: selected"
+            status.text = "Source portrait ready · tap LIVE"
         }.onFailure { error -> status.text = "Source error: ${error.message ?: "unable to load image"}" }
     }
 
@@ -81,11 +78,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val liaPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri ?: return@registerForActivityResult
+        runCatching {
+            modelRepository.importLiaGenerator(contentResolver, uri)
+            status.text = "LIA generator imported · ready for Live"
+        }.onFailure { error -> status.text = "LIA import failed: ${error.message ?: "invalid generator"}" }
+    }
+
     private val emapPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@registerForActivityResult
         runCatching {
             modelRepository.importEmap(contentResolver, uri)
-            status.text = "INSwapper EMAP imported · ready for Live"
+            status.text = "INSwapper EMAP imported"
         }.onFailure { error -> status.text = "EMAP import failed: ${error.message ?: "invalid EMAP"}" }
     }
 
@@ -109,6 +114,9 @@ class MainActivity : ComponentActivity() {
         findViewById<Button>(R.id.selectSourceButton).setOnClickListener {
             sourcePicker.launch(arrayOf("image/jpeg", "image/png", "image/webp"))
         }
+        findViewById<Button>(R.id.importLiaButton).setOnClickListener {
+            liaPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
+        }
         findViewById<Button>(R.id.importArcFaceButton).setOnClickListener {
             pendingModelName = InswapperModelSpec.recognizerModelName
             modelPicker.launch(arrayOf("application/octet-stream", "application/onnx", "*/*"))
@@ -125,34 +133,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startLive() {
-        if (sourceBitmap == null) {
-            status.text = "Select a source face first."
+        val source = sourceBitmap
+        if (source == null) {
+            status.text = "Select a source portrait first."
             return
         }
-        val recognizer = modelRepository.model(InswapperModelSpec.recognizerModelName)
-        val swapper = modelRepository.installedModels().firstOrNull { it.name in InswapperModelSpec.modelNames }
-        val emap = modelRepository.emap()
-        if (recognizer == null || swapper == null) {
-            status.text = "AI models missing · import w600k_r50.onnx and inswapper_128.onnx first"
-            return
-        }
-        if (emap == null) {
-            status.text = "INSwapper EMAP missing · import inswapper_emap.bin first"
+        val liaModel = modelRepository.liaModel()
+        if (liaModel == null) {
+            status.text = "LIA generator missing · import generator.onnx first"
             return
         }
 
         runCatching {
             stopProcessingOnly()
-            detector = MlKitFaceDetector()
-            // Keep large ONNX weights on disk. ONNX Runtime opens these paths directly.
-            embeddingEngine = OnnxInferenceEngine(recognizer, "w600k_r50 ArcFace")
-            swapperEngine = OnnxInferenceEngine(swapper, "INSwapper 128")
-            swapProcessor = LiveSwapProcessor(
-                detector = detector!!,
-                embedder = ArcFaceEmbedder(embeddingEngine!!),
-                swapper = InswapperOnnx(swapperEngine!!, emap),
-                compositor = FaceCompositor()
-            )
+            portraitAnimator = LiaPortraitAnimator(liaModel).also { it.prepareSource(source) }
             liveController.start()
             processedPreview.visibility = ImageView.VISIBLE
             processing.set(true)
@@ -163,9 +157,9 @@ class MainActivity : ComponentActivity() {
                 rtmpOutput = RtmpLiveOutput(this) { message ->
                     runOnUiThread { if (!isFinishing && !isDestroyed) status.text = message }
                 }.also { it.start(endpoint) }
-                status.text = "Live AI active · RTMP connecting"
+                status.text = "Photo Live active · RTMP connecting"
             } else {
-                status.text = "Live AI active · processed preview running"
+                status.text = "Photo Live active · continuous portrait animation"
             }
         }.onFailure { error ->
             stopLive()
@@ -181,24 +175,23 @@ class MainActivity : ComponentActivity() {
                 continue
             }
             try {
-                val output = swapProcessor?.process(frame.bitmap, sourceBitmap)
-                val rendered = output?.frame
-                if (rendered != null && output.status == LiveSwapStatus.Swapped) {
+                val animated = portraitAnimator?.animate(frame.bitmap)
+                if (animated != null) {
                     val streaming = rtmpOutput != null
                     if (streaming) {
-                        val displayCopy = rendered.copy(Bitmap.Config.ARGB_8888, false)
-                        rtmpOutput?.submit(rendered)
+                        val displayCopy = animated.copy(Bitmap.Config.ARGB_8888, false)
+                        rtmpOutput?.submit(animated)
                         showProcessedPreview(displayCopy)
                     } else {
-                        showProcessedPreview(rendered)
+                        showProcessedPreview(animated)
                     }
-                } else if (output?.status == LiveSwapStatus.NoTargetFace) {
-                    runOnUiThread { if (!isFinishing && !isDestroyed) status.text = "Live AI · face not detected" }
                 }
             } catch (error: Throwable) {
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) status.text = "AI frame error: ${error.message ?: error.javaClass.simpleName}"
+                    if (!isFinishing && !isDestroyed) status.text = "Photo Live frame error: ${error.message ?: error.javaClass.simpleName}"
                 }
+            } finally {
+                if (!frame.bitmap.isRecycled) frame.bitmap.recycle()
             }
         }
     }
@@ -220,13 +213,8 @@ class MainActivity : ComponentActivity() {
         rtmpOutput?.close()
         rtmpOutput = null
         runOnUiThread { previewBitmap.clear() }
-        runCatching { embeddingEngine?.close() }
-        runCatching { swapperEngine?.close() }
-        embeddingEngine = null
-        swapperEngine = null
-        detector?.close()
-        detector = null
-        swapProcessor = null
+        runCatching { portraitAnimator?.close() }
+        portraitAnimator = null
     }
 
     private fun stopLive() {
