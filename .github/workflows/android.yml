@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feature/live-ai-device-diagnostic
+      - feature/kemzy-286-oom-fix
   pull_request:
     branches:
       - feature/live-ai-device-diagnostic
+      - feature/kemzy-286-oom-fix
 
 jobs:
   test:
